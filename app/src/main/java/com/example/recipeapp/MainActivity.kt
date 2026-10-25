@@ -1,16 +1,21 @@
 package com.example.recipeapp
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.ToneGenerator
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
@@ -48,9 +53,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -69,15 +76,23 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
 import java.util.Collections
+import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 import kotlin.random.Random
+
+private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
+private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
 
 // =========================================================================
 // 1. ТЕМА И ЦВЕТОВЫЕ ПАЛИТРЫ
@@ -121,12 +136,13 @@ private val DarkCulinaryColorScheme = darkColorScheme(
 )
 
 // =========================================================================
-// 2. IMMUTABLE МОДЕЛИ ДАННЫХ
+// 2. IMMUTABLE МОДЕЛИ ДАННЫХ (С КРАТКИМ ОПИСАНИЕМ БЛЮДА)
 // =========================================================================
 @Immutable
 data class Recipe(
     val id: String,
     val title: String,
+    val description: String,
     val cuisine: String,
     val category: String,
     val cookingTime: String,
@@ -149,6 +165,7 @@ data class Recipe(
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
         put("title", title)
+        put("description", description)
         put("cuisine", cuisine)
         put("category", category)
         put("cookingTime", cookingTime)
@@ -165,16 +182,22 @@ data class Recipe(
             val imgs = obj.optJSONArray("imageUrls") ?: JSONArray()
             val ings = obj.optJSONArray("ingredients") ?: JSONArray()
             val insts = obj.optJSONArray("instructions") ?: JSONArray()
+            val title = obj.optString("title", "Домашнее блюдо")
+            val cuisine = obj.optString("cuisine", "Домашняя")
+            val category = obj.optString("category", "Вторые блюда")
+            val ingList = List(ings.length()) { ings.getString(it) }
+            val rawDesc = obj.optString("description", "")
             return Recipe(
                 id = obj.optString("id", "rec_${System.currentTimeMillis()}"),
-                title = obj.optString("title", "Домашнее блюдо"),
-                cuisine = obj.optString("cuisine", "Домашняя"),
-                category = obj.optString("category", "Вторые блюда"),
+                title = title,
+                description = if (rawDesc.isNotBlank()) rawDesc else CulinaryUtils.buildDishDescription(title, cuisine, category, ingList),
+                cuisine = cuisine,
+                category = category,
                 cookingTime = obj.optString("cookingTime", "30 мин"),
                 difficulty = obj.optString("difficulty", "Легко"),
                 calories = obj.optInt("calories", 250),
                 imageUrls = List(imgs.length()) { imgs.getString(it) },
-                ingredients = List(ings.length()) { ings.getString(it) },
+                ingredients = ingList,
                 instructions = List(insts.length()) { insts.getString(it) },
                 isCustom = obj.optBoolean("isCustom", false)
             )
@@ -185,14 +208,25 @@ data class Recipe(
 @Immutable
 data class ParsedTimer(val durationSeconds: Int, val label: String)
 
-enum class DataSourceMode(val label: String) {
-    LOCAL("📚 Локальная база"),
-    MEAL_DB_API("🌍 Мировая база (RU)"),
-    FREE_AI("✨ ИИ Шеф (RU)")
+@Immutable
+data class GitHubReleaseInfo(
+    val repoName: String,
+    val releaseTitle: String,
+    val publishedAtMillis: Long,
+    val publishedFormatted: String,
+    val downloadUrl: String,
+    val sizeMb: String,
+    val isNewerThanInstalled: Boolean
+)
+
+enum class DataSourceMode(val shortLabel: String, val fullLabel: String) {
+    LOCAL("📚 Локальная", "📚 Локальная база"),
+    MEAL_DB_API("🌍 Мировая", "🌍 Мировая база (RU)"),
+    FREE_AI("✨ ИИ Шеф", "✨ ИИ Шеф (RU)")
 }
 
 enum class SortOrder(val label: String) {
-    FRESH_BATCH("🎲 По новизне"),
+    FRESH_BATCH("🎲 Новизна"),
     FRIDGE_MATCH("🧊 По холодильнику"),
     FASTEST("⚡ Быстрые"),
     LOW_CALORIE("🥗 Легкие")
@@ -205,7 +239,268 @@ enum class AppScreen {
 }
 
 // =========================================================================
-// 3. КУЛИНАРНЫЕ УТИЛИТЫ, МАППЕР РЕАЛЬНЫХ КУХОНЬ МИРА И ПЕРЕВОДЧИК
+// 3. МЕНЕДЖЕР АВТООБНОВЛЕНИЯ ПРИЛОЖЕНИЯ ЧЕРЕЗ GITHUB RELEASES
+// =========================================================================
+object AppUpdateManager {
+
+    fun getInstalledUpdateTimestamp(context: Context): Long {
+        return try {
+            val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
+            pkgInfo.lastUpdateTime
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    fun formatTimestamp(millis: Long): String {
+        if (millis <= 0L) return "Неизвестно"
+        val sdf = SimpleDateFormat("dd.MM.yyyy в HH:mm", Locale.getDefault())
+        return sdf.format(Date(millis))
+    }
+
+    private fun parseIsoTimestamp(iso: String): Long {
+        if (iso.isBlank()) return 0L
+        return try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+                timeZone = TimeZone.getTimeZone("UTC")
+            }
+            sdf.parse(iso)?.time ?: 0L
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    suspend fun checkGitHubUpdate(context: Context, repoPath: String = DEFAULT_GITHUB_REPO): Result<GitHubReleaseInfo> =
+        withContext(Dispatchers.IO) {
+            val cleanRepo = repoPath
+                .removePrefix("https://github.com/")
+                .removePrefix("http://github.com/")
+                .removePrefix("github.com/")
+                .trim('/')
+                .ifEmpty { DEFAULT_GITHUB_REPO }
+
+            val candidateRepos = listOf(
+                cleanRepo,
+                "GattlerGun/RecipeApp"
+            ).distinct()
+
+            val installedTime = getInstalledUpdateTimestamp(context)
+            val savedReleaseTime = context.getSharedPreferences("chef_app_v8_storage", Context.MODE_PRIVATE)
+                .getLong("last_installed_release_time", 0L)
+            val baselineTime = maxOf(installedTime, savedReleaseTime)
+
+            for (repo in candidateRepos) {
+                val urlsToTry = listOf(
+                    "https://api.github.com/repos/$repo/releases/tags/latest-apk",
+                    "https://api.github.com/repos/$repo/releases/latest",
+                    "https://api.github.com/repos/$repo/releases"
+                )
+                for (apiUrl in urlsToTry) {
+                    var conn: HttpURLConnection? = null
+                    try {
+                        conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
+                            requestMethod = "GET"
+                            setRequestProperty("Accept", "application/vnd.github+json")
+                            setRequestProperty("User-Agent", "ChefRecipeApp-Updater")
+                            connectTimeout = 7000
+                            readTimeout = 7000
+                        }
+                        if (conn.responseCode == 200) {
+                            val body = conn.inputStream.bufferedReader().use { it.readText() }
+                            val releaseObj = if (body.trimStart().startsWith("[")) {
+                                val arr = JSONArray(body)
+                                if (arr.length() > 0) arr.getJSONObject(0) else continue
+                            } else {
+                                JSONObject(body)
+                            }
+
+                            val assets = releaseObj.optJSONArray("assets") ?: JSONArray()
+                            var apkUrl = ""
+                            var assetUpdatedIso = releaseObj.optString("published_at", "")
+                            var sizeBytes = 0L
+
+                            for (i in 0 until assets.length()) {
+                                val asset = assets.getJSONObject(i)
+                                val name = asset.optString("name", "")
+                                if (name.endsWith(".apk", ignoreCase = true)) {
+                                    apkUrl = asset.optString("browser_download_url", "")
+                                    assetUpdatedIso = asset.optString("updated_at", assetUpdatedIso)
+                                    sizeBytes = asset.optLong("size", 0L)
+                                    break
+                                }
+                            }
+
+                            if (apkUrl.isEmpty()) {
+                                apkUrl = "https://github.com/$repo/releases/download/latest-apk/ChefRecipeApp.apk"
+                            }
+
+                            val remoteMillis = parseIsoTimestamp(assetUpdatedIso)
+                            val sizeMb = if (sizeBytes > 0) {
+                                String.format(Locale.US, "%.1f МБ", sizeBytes / (1024.0 * 1024.0))
+                            } else "APK сборка"
+
+                            // Считаем обновлением, если сборка на GitHub вышла хотя бы на 2 минуты позже установки
+                            val isNewer = remoteMillis > (baselineTime + 120_000L)
+
+                            return@withContext Result.success(
+                                GitHubReleaseInfo(
+                                    repoName = repo,
+                                    releaseTitle = releaseObj.optString("name", "Свежая сборка APK"),
+                                    publishedAtMillis = remoteMillis,
+                                    publishedFormatted = formatTimestamp(remoteMillis),
+                                    downloadUrl = apkUrl,
+                                    sizeMb = sizeMb,
+                                    isNewerThanInstalled = isNewer
+                                )
+                            )
+                        }
+                    } catch (_: Exception) {
+                    } finally {
+                        conn?.disconnect()
+                    }
+                }
+            }
+
+            // Прямой фоллбэк, если лимит API превышен
+            val directUrl = "https://github.com/$cleanRepo/releases/download/latest-apk/ChefRecipeApp.apk"
+            return@withContext Result.success(
+                GitHubReleaseInfo(
+                    repoName = cleanRepo,
+                    releaseTitle = "Прямая сборка из Releases (latest-apk)",
+                    publishedAtMillis = System.currentTimeMillis(),
+                    publishedFormatted = "Последний билд в ветке main",
+                    downloadUrl = directUrl,
+                    sizeMb = "ChefRecipeApp.apk",
+                    isNewerThanInstalled = false
+                )
+            )
+        }
+
+    suspend fun downloadAndInstallApk(
+        context: Context,
+        releaseInfo: GitHubReleaseInfo,
+        onProgress: (Float) -> Unit
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            var currentUrl = releaseInfo.downloadUrl
+            var redirects = 0
+            var conn: HttpURLConnection
+
+            while (true) {
+                conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = true
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android; ChefRecipeApp)")
+                    connectTimeout = 15000
+                    readTimeout = 30000
+                }
+                val code = conn.responseCode
+                if (code in listOf(301, 302, 303, 307, 308)) {
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (location.isNullOrBlank() || redirects >= 6) break
+                    currentUrl = location
+                    redirects++
+                } else {
+                    break
+                }
+            }
+
+            if (conn.responseCode != 200) {
+                conn.disconnect()
+                return@withContext Result.failure(Exception("Файл ChefRecipeApp.apk еще не создан в разделе Releases (код ${conn.responseCode})"))
+            }
+
+            val totalBytes = conn.contentLengthLong
+            val apkFile = File(context.externalCacheDir ?: context.cacheDir, "ChefRecipeApp_update.apk")
+            if (apkFile.exists()) apkFile.delete()
+
+            conn.inputStream.use { input ->
+                FileOutputStream(apkFile).use { output ->
+                    val buffer = ByteArray(16 * 1024)
+                    var downloaded = 0L
+                    var read: Int
+                    while (input.read(buffer).also { read = it } != -1) {
+                        output.write(buffer, 0, read)
+                        downloaded += read
+                        if (totalBytes > 0) {
+                            onProgress((downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f))
+                        }
+                    }
+                    output.flush()
+                }
+            }
+            conn.disconnect()
+
+            if (releaseInfo.publishedAtMillis > 0L) {
+                context.getSharedPreferences("chef_app_v8_storage", Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong("last_installed_release_time", releaseInfo.publishedAtMillis)
+                    .apply()
+            }
+
+            withContext(Dispatchers.Main) {
+                triggerPackageInstaller(context, apkFile)
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun triggerPackageInstaller(context: Context, apkFile: File) {
+        if (!apkFile.exists() || apkFile.length() == 0L) {
+            Toast.makeText(context, "Файл обновления не найден", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // На Android 8+ проверяем разрешение на установку APK из этого источника
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
+            Toast.makeText(
+                context,
+                "Разрешите установку обновлений для «Шеф-Повар» и нажмите «Установить» еще раз",
+                Toast.LENGTH_LONG
+            ).show()
+            val permIntent = Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:${context.packageName}")
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(permIntent)
+            return
+        }
+
+        try {
+            val packageInstaller = context.packageManager.packageInstaller
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            val sessionId = packageInstaller.createSession(params)
+            val session = packageInstaller.openSession(sessionId)
+
+            apkFile.inputStream().use { input ->
+                session.openWrite("ChefRecipeApp_update", 0, apkFile.length()).use { output ->
+                    input.copyTo(output)
+                    session.fsync(output)
+                }
+            }
+
+            val callbackIntent = Intent(context, MainActivity::class.java).apply {
+                action = ACTION_INSTALL_COMMIT
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getActivity(context, sessionId, callbackIntent, flags)
+            session.commit(pendingIntent.intentSender)
+            session.close()
+        } catch (e: Exception) {
+            Toast.makeText(context, "Ошибка запуска установщика: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        }
+    }
+}
+
+// =========================================================================
+// 4. КУЛИНАРНЫЕ УТИЛИТЫ, ГЕНЕРАТОР ОПИСАНИЙ БЛЮД И ПЕРЕВОДЧИК
 // =========================================================================
 object CulinaryUtils {
     val CUISINES = listOf(
@@ -216,72 +511,64 @@ object CulinaryUtils {
     val QUICK_FRIDGE = listOf("Курица", "Яйца", "Картофель", "Сыр", "Томаты", "Молоко", "Рис", "Фарш", "Творог", "Капуста", "Грибы")
 
     private val AREA_TO_RUSSIAN_CUISINE = mapOf(
-        "russian" to "Русская",
-        "korean" to "Корейская",
-        "french" to "Французская",
-        "italian" to "Итальянская",
-        "japanese" to "Японская",
-        "georgian" to "Грузинская",
-        "mexican" to "Мексиканская",
-        "chinese" to "Китайская",
-        "thai" to "Тайская",
-        "indian" to "Индийская",
-        "greek" to "Греческая",
-        "spanish" to "Испанская",
-        "turkish" to "Турецкая",
-        "vietnamese" to "Вьетнамская",
-        "moroccan" to "Марокканская",
-        "american" to "Американская",
-        "british" to "Британская",
-        "polish" to "Польская",
-        "ukrainian" to "Украинская",
-        "croatian" to "Хорватская",
-        "irish" to "Ирландская",
-        "jamaican" to "Ямайская",
-        "egyptian" to "Египетская",
-        "dutch" to "Голландская",
-        "portuguese" to "Португальская",
-        "canadian" to "Канадская",
-        "malaysian" to "Малайзийская",
-        "tunisian" to "Тунисская",
-        "filipino" to "Филиппинская",
-        "kenyan" to "Кенийская",
-        "norwegian" to "Норвежская",
-        "australian" to "Австралийская"
+        "russian" to "Русская", "korean" to "Корейская", "french" to "Французская",
+        "italian" to "Итальянская", "japanese" to "Японская", "georgian" to "Грузинская",
+        "mexican" to "Мексиканская", "chinese" to "Китайская", "thai" to "Тайская",
+        "indian" to "Индийская", "greek" to "Греческая", "spanish" to "Испанская",
+        "turkish" to "Турецкая", "vietnamese" to "Вьетнамская", "moroccan" to "Марокканская",
+        "american" to "Американская", "british" to "Британская", "polish" to "Польская",
+        "ukrainian" to "Украинская", "croatian" to "Хорватская", "irish" to "Ирландская",
+        "jamaican" to "Ямайская", "egyptian" to "Египетская", "dutch" to "Голландская",
+        "portuguese" to "Португальская", "canadian" to "Канадская", "malaysian" to "Малайзийская",
+        "tunisian" to "Тунисская", "filipino" to "Филиппинская", "kenyan" to "Кенийская",
+        "norwegian" to "Норвежская", "australian" to "Австралийская"
     )
 
     private val CUISINE_FLAGS = mapOf(
-        "Русская" to "🇷🇺",
-        "Корейская" to "🇰🇷",
-        "Французская" to "🇫🇷",
-        "Итальянская" to "🇮🇹",
-        "Японская" to "🇯🇵",
-        "Грузинская" to "🇬🇪",
-        "Мексиканская" to "🇲🇽",
-        "Китайская" to "🇨🇳",
-        "Тайская" to "🇹🇭",
-        "Индийская" to "🇮🇳",
-        "Греческая" to "🇬🇷",
-        "Испанская" to "🇪🇸",
-        "Турецкая" to "🇹🇷",
-        "Вьетнамская" to "🇻🇳",
-        "Марокканская" to "🇲🇦",
-        "Американская" to "🇺🇸",
-        "Британская" to "🇬🇧",
-        "Польская" to "🇵🇱",
-        "Украинская" to "🇺🇦",
-        "Хорватская" to "🇭🇷",
-        "Ирландская" to "🇮🇪",
-        "Ямайская" to "🇯🇲",
-        "Египетская" to "🇪🇬",
-        "Голландская" to "🇳🇱",
-        "Португальская" to "🇵🇹",
-        "Канадская" to "🇨🇦",
-        "Малайзийская" to "🇲🇾",
-        "Тунисская" to "🇹🇳",
-        "Филиппинская" to "🇵🇭",
-        "Домашняя" to "🏠"
+        "Русская" to "🇷🇺", "Корейская" to "🇰🇷", "Французская" to "🇫🇷", "Итальянская" to "🇮🇹",
+        "Японская" to "🇯🇵", "Грузинская" to "🇬🇪", "Мексиканская" to "🇲🇽", "Китайская" to "🇨🇳",
+        "Тайская" to "🇹🇭", "Индийская" to "🇮🇳", "Греческая" to "🇬🇷", "Испанская" to "🇪🇸",
+        "Турецкая" to "🇹🇷", "Вьетнамская" to "🇻🇳", "Марокканская" to "🇲🇦", "Американская" to "🇺🇸",
+        "Британская" to "🇬🇧", "Польская" to "🇵🇱", "Украинская" to "🇺🇦", "Хорватская" to "🇭🇷",
+        "Ирландская" to "🇮🇪", "Ямайская" to "🇯🇲", "Египетская" to "🇪🇬", "Голландская" to "🇳🇱",
+        "Португальская" to "🇵🇹", "Канадская" to "🇨🇦", "Малайзийская" to "🇲🇾", "Тунисская" to "🇹🇳",
+        "Филиппинская" to "🇵🇭", "Домашняя" to "🏠"
     )
+
+    // Умный генератор понятного описания блюда (чтобы сразу было ясно, что это за блюдо)
+    fun buildDishDescription(
+        title: String,
+        cuisine: String,
+        category: String,
+        ingredients: List<String>
+    ): String {
+        val coreIngs = ingredients.take(4)
+            .map { it.substringBefore("—").substringBefore("-").trim().lowercase() }
+            .filter { it.isNotBlank() }
+            .joinToString(", ")
+
+        val categoryFlavor = when (category) {
+            "Супы", "Супы и закуски" -> "Ароматное первое блюдо с насыщенным бульоном и согревающим вкусом"
+            "Каши и завтраки" -> "Сытное и нежное утреннее блюдо, отлично подходящее для питательного завтрака"
+            "Выпечка" -> "Румяная домашняя выпечка с мягкой текстурой и аппетитной корочкой"
+            "Что-то к чаю" -> "Нежный десерт к чаю или кофе с приятной сладостью и ярким ароматом"
+            "Салаты", "Салаты и гарниры" -> "Свежее и сбалансированное блюдо с ярким сочетанием текстур и заправки"
+            "Паста и пицца" -> "Классическое блюдо с насыщенным соусом и аппетитной подачей"
+            else -> "Сытное и ароматное основное блюдо, идеально подходящее для обеда или ужина"
+        }
+
+        val cuisineNote = if (cuisine != "Мировая" && cuisine != "Все") {
+            "традиции кухни «$cuisine»"
+        } else {
+            "мировой кулинарной коллекции"
+        }
+
+        return if (coreIngs.isNotEmpty()) {
+            "$categoryFlavor из $cuisineNote. В основе рецепта — $coreIngs."
+        } else {
+            "$categoryFlavor из $cuisineNote."
+        }
+    }
 
     fun resolveRealCuisine(rawArea: String?, dishTitle: String, selectedFilterCuisine: String): String {
         val cleanArea = rawArea?.trim()?.lowercase() ?: ""
@@ -380,148 +667,76 @@ object CulinaryUtils {
 
     private val CULINARY_DICTIONARY: List<Pair<Regex, String>> = listOf(
         "extra virgin olive oil" to "оливковое масло первого отжима",
-        "sunflower oil" to "подсолнечное масло",
-        "vegetable oil" to "растительное масло",
-        "sesame seed oil" to "кунжутное масло",
-        "sesame oil" to "кунжутное масло",
-        "coconut oil" to "кокосовое масло",
-        "olive oil" to "оливковое масло",
-        "peanut oil" to "арахисовое масло",
-        "canola oil" to "рапсовое масло",
-        "unsalted butter" to "сливочное масло",
-        "salted butter" to "соленое сливочное масло",
-        "melted butter" to "растопленное сливочное масло",
-        "chicken breast" to "куриная грудка",
-        "chicken breasts" to "куриные грудки",
-        "chicken thighs" to "куриные бедра",
-        "chicken thigh" to "куриное бедро",
-        "chicken wings" to "куриные крылышки",
-        "chicken stock" to "куриный бульон",
-        "chicken broth" to "куриный бульон",
-        "beef stock" to "говяжий бульон",
-        "beef broth" to "говяжий бульон",
-        "vegetable stock" to "овощной бульон",
-        "vegetable broth" to "овощной бульон",
-        "minced beef" to "говяжий фарш",
-        "ground beef" to "говяжий фарш",
-        "minced pork" to "свиной фарш",
-        "ground pork" to "свиной фарш",
-        "heavy cream" to "жирные сливки",
-        "double cream" to "жирные сливки",
-        "single cream" to "сливки",
-        "sour cream" to "сметана",
-        "whipping cream" to "сливки для взбивания",
-        "cream cheese" to "сливочный сыр",
-        "cheddar cheese" to "сыр Чеддер",
-        "parmesan cheese" to "сыр Пармезан",
-        "mozzarella cheese" to "сыр Моцарелла",
-        "feta cheese" to "сыр Фета",
-        "goat cheese" to "козий сыр",
-        "spring onions" to "зеленый лук",
-        "spring onion" to "зеленый лук",
-        "green onions" to "зеленый лук",
-        "green onion" to "зеленый лук",
-        "red onion" to "красный лук",
-        "red onions" to "красный лук",
-        "yellow onion" to "репчатый лук",
-        "garlic cloves" to "зубчики чеснока",
-        "garlic clove" to "зубчик чеснока",
-        "cloves garlic" to "зубчика чеснока",
-        "clove garlic" to "зубчик чеснока",
-        "garlic powder" to "сушеный чеснок",
-        "onion powder" to "луковый порошок",
-        "cherry tomatoes" to "томаты черри",
-        "plum tomatoes" to "сливовидные томаты",
-        "chopped tomatoes" to "рубленые томаты",
-        "canned tomatoes" to "консервированные томаты",
-        "tomato puree" to "томатное пюре",
-        "tomato paste" to "томатная паста",
-        "tomato sauce" to "томатный соус",
-        "soy sauce" to "соевый соус",
-        "fish sauce" to "рыбный соус",
-        "oyster sauce" to "устричный соус",
-        "worcestershire sauce" to "вустерский соус",
-        "hot sauce" to "острый соус",
-        "chili sauce" to "соус чили",
-        "white wine vinegar" to "белый винный уксус",
-        "red wine vinegar" to "красный винный уксус",
-        "apple cider vinegar" to "яблочный уксус",
-        "balsamic vinegar" to "бальзамический уксус",
-        "rice vinegar" to "рисовый уксус",
-        "white wine" to "белое сухое вино",
-        "red wine" to "красное вино",
-        "lemon juice" to "лимонный сок",
-        "lime juice" to "сок лайма",
-        "orange juice" to "апельсиновый сок",
-        "lemon zest" to "цедра лимона",
-        "orange zest" to "цедра апельсина",
-        "all-purpose flour" to "пшеничная мука",
-        "all purpose flour" to "пшеничная мука",
-        "plain flour" to "пшеничная мука",
-        "self-raising flour" to "мука с разрыхлителем",
-        "self raising flour" to "мука с разрыхлителем",
-        "bread flour" to "хлебопекарная мука",
-        "corn flour" to "кукурузный крахмал",
-        "cornflour" to "кукурузный крахмал",
-        "cornstarch" to "кукурузный крахмал",
-        "corn starch" to "кукурузный крахмал",
-        "baking powder" to "разрыхлитель",
-        "baking soda" to "пищевая сода",
-        "bicarbonate of soda" to "пищевая сода",
-        "caster sugar" to "мелкий сахар",
-        "brown sugar" to "тростниковый сахар",
-        "icing sugar" to "сахарная пудра",
-        "powdered sugar" to "сахарная пудра",
-        "granulated sugar" to "сахарный песок",
-        "vanilla extract" to "ванильный экстракт",
-        "black pepper" to "черный перец",
-        "white pepper" to "белый перец",
-        "cayenne pepper" to "кайенский перец",
-        "red pepper flakes" to "хлопья красного перца",
-        "chilli flakes" to "хлопья чили",
-        "chili powder" to "порошок чили",
-        "bell pepper" to "болгарский перец",
-        "red pepper" to "красный сладкий перец",
-        "green pepper" to "зеленый перец",
-        "sweet potatoes" to "батат",
-        "sweet potato" to "батат",
-        "bay leaf" to "лавровый лист",
-        "bay leaves" to "лавровый лист",
-        "egg yolks" to "яичные желтки",
-        "egg yolk" to "яичный желток",
-        "egg whites" to "яичные белки",
-        "egg white" to "яичный белок",
-        "free-range eggs" to "домашние яйца",
-        "coconut milk" to "кокосовое молоко",
-        "condensed milk" to "сгущенное молоко",
-        "almond milk" to "миндальное молоко",
-        "bread crumbs" to "панировочные сухари",
-        "breadcrumbs" to "панировочные сухари",
-        "sesame seeds" to "семена кунжута",
-        "sunflower seeds" to "семечки подсолнуха",
-        "pine nuts" to "кедровые орешки",
-        "peanut butter" to "арахисовая паста",
-        "maple syrup" to "кленовый сироп",
-        "to taste" to "по вкусу",
-        "for garnish" to "для украшения",
-        "to serve" to "для подачи",
-        "finely chopped" to "мелко нарезанный",
-        "roughly chopped" to "крупно нарезанный",
-        "thinly sliced" to "тонко нарезанный",
-        "freshly ground" to "свежемолотый",
-        "room temperature" to "комнатной температуры",
-        "preheat the oven" to "разогрейте духовку",
-        "preheat oven" to "разогрейте духовку",
-        "medium heat" to "средний огонь",
-        "high heat" to "сильный огонь",
-        "low heat" to "слабый огонь",
-        "golden brown" to "золотистая корочка",
-        "bring to a boil" to "доведите до кипения",
-        "in a large bowl" to "в большой миске",
-        "in a bowl" to "в миске",
-        "frying pan" to "сковорода",
-        "baking tray" to "противень",
-        "baking sheet" to "противень",
+        "sunflower oil" to "подсолнечное масло", "vegetable oil" to "растительное масло",
+        "sesame seed oil" to "кунжутное масло", "sesame oil" to "кунжутное масло",
+        "coconut oil" to "кокосовое масло", "olive oil" to "оливковое масло",
+        "peanut oil" to "арахисовое масло", "canola oil" to "рапсовое масло",
+        "unsalted butter" to "сливочное масло", "salted butter" to "соленое сливочное масло",
+        "melted butter" to "растопленное сливочное масло", "chicken breast" to "куриная грудка",
+        "chicken breasts" to "куриные грудки", "chicken thighs" to "куриные бедра",
+        "chicken thigh" to "куриное бедро", "chicken wings" to "куриные крылышки",
+        "chicken stock" to "куриный бульон", "chicken broth" to "куриный бульон",
+        "beef stock" to "говяжий бульон", "beef broth" to "говяжий бульон",
+        "vegetable stock" to "овощной бульон", "vegetable broth" to "овощной бульон",
+        "minced beef" to "говяжий фарш", "ground beef" to "говяжий фарш",
+        "minced pork" to "свиной фарш", "ground pork" to "свиной фарш",
+        "heavy cream" to "жирные сливки", "double cream" to "жирные сливки",
+        "single cream" to "сливки", "sour cream" to "сметана",
+        "whipping cream" to "сливки для взбивания", "cream cheese" to "сливочный сыр",
+        "cheddar cheese" to "сыр Чеддер", "parmesan cheese" to "сыр Пармезан",
+        "mozzarella cheese" to "сыр Моцарелла", "feta cheese" to "сыр Фета",
+        "goat cheese" to "козий сыр", "spring onions" to "зеленый лук",
+        "spring onion" to "зеленый лук", "green onions" to "зеленый лук",
+        "green onion" to "зеленый лук", "red onion" to "красный лук",
+        "red onions" to "красный лук", "yellow onion" to "репчатый лук",
+        "garlic cloves" to "зубчики чеснока", "garlic clove" to "зубчик чеснока",
+        "cloves garlic" to "зубчика чеснока", "clove garlic" to "зубчик чеснока",
+        "garlic powder" to "сушеный чеснок", "onion powder" to "луковый порошок",
+        "cherry tomatoes" to "томаты черри", "plum tomatoes" to "сливовидные томаты",
+        "chopped tomatoes" to "рубленые томаты", "canned tomatoes" to "консервированные томаты",
+        "tomato puree" to "томатное пюре", "tomato paste" to "томатная паста",
+        "tomato sauce" to "томатный соус", "soy sauce" to "соевый соус",
+        "fish sauce" to "рыбный соус", "oyster sauce" to "устричный соус",
+        "worcestershire sauce" to "вустерский соус", "hot sauce" to "острый соус",
+        "chili sauce" to "соус чили", "white wine vinegar" to "белый винный уксус",
+        "red wine vinegar" to "красный винный уксус", "apple cider vinegar" to "яблочный уксус",
+        "balsamic vinegar" to "бальзамический уксус", "rice vinegar" to "рисовый уксус",
+        "white wine" to "белое сухое вино", "red wine" to "красное вино",
+        "lemon juice" to "лимонный сок", "lime juice" to "сок лайма",
+        "orange juice" to "апельсиновый сок", "lemon zest" to "цедра лимона",
+        "orange zest" to "цедра апельсина", "all-purpose flour" to "пшеничная мука",
+        "all purpose flour" to "пшеничная мука", "plain flour" to "пшеничная мука",
+        "self-raising flour" to "мука с разрыхлителем", "self raising flour" to "мука с разрыхлителем",
+        "bread flour" to "хлебопекарная мука", "corn flour" to "кукурузный крахмал",
+        "cornflour" to "кукурузный крахмал", "cornstarch" to "кукурузный крахмал",
+        "corn starch" to "кукурузный крахмал", "baking powder" to "разрыхлитель",
+        "baking soda" to "пищевая сода", "bicarbonate of soda" to "пищевая сода",
+        "caster sugar" to "мелкий сахар", "brown sugar" to "тростниковый сахар",
+        "icing sugar" to "сахарная пудра", "powdered sugar" to "сахарная пудра",
+        "granulated sugar" to "сахарный песок", "vanilla extract" to "ванильный экстракт",
+        "black pepper" to "черный перец", "white pepper" to "белый перец",
+        "cayenne pepper" to "кайенский перец", "red pepper flakes" to "хлопья красного перца",
+        "chilli flakes" to "хлопья чили", "chili powder" to "порошок чили",
+        "bell pepper" to "болгарский перец", "red pepper" to "красный сладкий перец",
+        "green pepper" to "зеленый перец", "sweet potatoes" to "батат",
+        "sweet potato" to "батат", "bay leaf" to "лавровый лист", "bay leaves" to "лавровый лист",
+        "egg yolks" to "яичные желтки", "egg yolk" to "яичный желток",
+        "egg whites" to "яичные белки", "egg white" to "яичный белок",
+        "free-range eggs" to "домашние яйца", "coconut milk" to "кокосовое молоко",
+        "condensed milk" to "сгущенное молоко", "almond milk" to "миндальное молоко",
+        "bread crumbs" to "панировочные сухари", "breadcrumbs" to "панировочные сухари",
+        "sesame seeds" to "семена кунжута", "sunflower seeds" to "семечки подсолнуха",
+        "pine nuts" to "кедровые орешки", "peanut butter" to "арахисовая паста",
+        "maple syrup" to "кленовый сироп", "to taste" to "по вкусу",
+        "for garnish" to "для украшения", "to serve" to "для подачи",
+        "finely chopped" to "мелко нарезанный", "roughly chopped" to "крупно нарезанный",
+        "thinly sliced" to "тонко нарезанный", "freshly ground" to "свежемолотый",
+        "room temperature" to "комнатной температуры", "preheat the oven" to "разогрейте духовку",
+        "preheat oven" to "разогрейте духовку", "medium heat" to "средний огонь",
+        "high heat" to "сильный огонь", "low heat" to "слабый огонь",
+        "golden brown" to "золотистая корочка", "bring to a boil" to "доведите до кипения",
+        "in a large bowl" to "в большой миске", "in a bowl" to "в миске",
+        "frying pan" to "сковорода", "baking tray" to "противень", "baking sheet" to "противень",
         "chicken" to "курица", "beef" to "говядина", "pork" to "свинина", "lamb" to "баранина",
         "turkey" to "индейка", "duck" to "утка", "veal" to "телятина", "bacon" to "бекон",
         "sausage" to "колбаски", "sausages" to "колбаски", "ham" to "ветчина", "salami" to "салями",
@@ -781,7 +996,7 @@ object CulinaryUtils {
 }
 
 // =========================================================================
-// 4. АСИНХРОННЫЙ МЕНЕДЖЕР ХРАНИЛИЩА
+// 5. АСИНХРОННЫЙ МЕНЕДЖЕР ХРАНИЛИЩА
 // =========================================================================
 class RecipeStorage(context: Context) {
     private val prefs = context.getSharedPreferences("chef_app_v8_storage", Context.MODE_PRIVATE)
@@ -792,6 +1007,13 @@ class RecipeStorage(context: Context) {
 
     fun saveDarkTheme(enabled: Boolean) {
         prefs.edit().putBoolean("dark_mode", enabled).apply()
+    }
+
+    fun loadGitHubRepo(): String =
+        prefs.getString("github_repo_path", DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
+
+    fun saveGitHubRepo(repo: String) {
+        prefs.edit().putString("github_repo_path", repo.trim()).apply()
     }
 
     fun loadStringSet(key: String): List<String> =
@@ -832,7 +1054,7 @@ class RecipeStorage(context: Context) {
 }
 
 // =========================================================================
-// 5. КОНТРОЛЛЕР ГОЛОСОВОЙ ОЗВУЧКИ
+// 6. КОНТРОЛЛЕР ГОЛОСОВОЙ ОЗВУЧКИ
 // =========================================================================
 class SpeechManager(
     private val context: Context,
@@ -1006,11 +1228,12 @@ class SpeechManager(
 }
 
 // =========================================================================
-// 6. ACTIVITY И ГЛАВНЫЙ ЭКРАН
+// 7. ACTIVITY И ОБРАБОТЧИК УСТАНОВКИ ОБНОВЛЕНИЙ APK
 // =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        handleInstallCommitIntent(intent)
         setContent {
             val context = LocalContext.current
             val storage = remember { RecipeStorage(context) }
@@ -1036,8 +1259,43 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleInstallCommitIntent(intent)
+    }
+
+    private fun handleInstallCommitIntent(intent: Intent?) {
+        if (intent?.action == ACTION_INSTALL_COMMIT) {
+            when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)) {
+                PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                    @Suppress("DEPRECATION")
+                    val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                    if (confirmIntent != null) {
+                        startActivity(confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                }
+                PackageInstaller.STATUS_SUCCESS -> {
+                    Toast.makeText(this, "✅ Приложение успешно обновлено!", Toast.LENGTH_LONG).show()
+                }
+                PackageInstaller.STATUS_FAILURE,
+                PackageInstaller.STATUS_FAILURE_ABORTED,
+                PackageInstaller.STATUS_FAILURE_BLOCKED,
+                PackageInstaller.STATUS_FAILURE_CONFLICT,
+                PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
+                PackageInstaller.STATUS_FAILURE_INVALID,
+                PackageInstaller.STATUS_FAILURE_STORAGE -> {
+                    val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Отменено"
+                    Toast.makeText(this, "Установка не завершена: $msg", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
 }
 
+// =========================================================================
+// 8. ГЛАВНЫЙ ЭКРАН С УЛЬТРА-КОМПАКТНОЙ ШАПКОЙ И МОДАЛЬНЫМ ОБНОВЛЕНИЕМ GITHUB
+// =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecipeAppScreen(
@@ -1065,9 +1323,20 @@ fun RecipeAppScreen(
     var sliderPosition by remember { mutableFloatStateOf(10f) }
     var committedLimitCount by remember { mutableIntStateOf(10) }
     var refreshSeed by remember { mutableIntStateOf(0) }
+
+    // Поиск и Фильтры по умолчанию свернуты, чтобы карточки блюд занимали максимум экрана!
     var searchQuery by remember { mutableStateOf("") }
+    var isSearchVisible by remember { mutableStateOf(false) }
     var showOnlyFavorites by remember { mutableStateOf(false) }
-    var isFiltersExpanded by remember { mutableStateOf(true) }
+    var isFiltersExpanded by remember { mutableStateOf(false) }
+
+    // Состояния автообновления с GitHub
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var githubRepoInput by remember { mutableStateOf(storage.loadGitHubRepo()) }
+    var releaseInfo by remember { mutableStateOf<GitHubReleaseInfo?>(null) }
+    var isCheckingUpdate by remember { mutableStateOf(false) }
+    var isDownloadingUpdate by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableFloatStateOf(0f) }
 
     var ingredientInput by remember { mutableStateOf("") }
     var lastVoiceCommand by remember { mutableStateOf<String?>(null) }
@@ -1080,6 +1349,32 @@ fun RecipeAppScreen(
 
     fun persistAll() {
         storage.saveAllAsync(fridgeItems, shoppingListItems, favoriteRecipes, customUserRecipes)
+    }
+
+    // Фоновая проверка обновлений на GitHub при запуске приложения
+    fun checkUpdatesNow(showToastIfUpToDate: Boolean = false) {
+        coroutineScope.launch {
+            isCheckingUpdate = true
+            storage.saveGitHubRepo(githubRepoInput)
+            val res = AppUpdateManager.checkGitHubUpdate(context, githubRepoInput)
+            isCheckingUpdate = false
+            res.onSuccess { info ->
+                releaseInfo = info
+                if (info.isNewerThanInstalled) {
+                    Toast.makeText(context, "🚀 На GitHub доступна новая сборка приложения!", Toast.LENGTH_LONG).show()
+                } else if (showToastIfUpToDate) {
+                    Toast.makeText(context, "✅ У вас установлена актуальная сборка", Toast.LENGTH_SHORT).show()
+                }
+            }.onFailure { err ->
+                if (showToastIfUpToDate) {
+                    Toast.makeText(context, "Ошибка проверки GitHub: ${err.localizedMessage}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        checkUpdatesNow(showToastIfUpToDate = false)
     }
 
     var recipes by remember {
@@ -1214,6 +1509,7 @@ fun RecipeAppScreen(
             val base = if (showOnlyFavorites) favoriteRecipes.toList() else recipes
             val searched = if (searchQuery.isBlank()) base else base.filter {
                 it.title.contains(searchQuery.trim(), ignoreCase = true) ||
+                it.description.contains(searchQuery.trim(), ignoreCase = true) ||
                 it.cuisine.contains(searchQuery.trim(), ignoreCase = true) ||
                 it.ingredients.any { ing -> ing.contains(searchQuery.trim(), ignoreCase = true) }
             }
@@ -1229,80 +1525,296 @@ fun RecipeAppScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
-        // Верхняя навигационная панель
+    // Модальное окно проверки и установки обновления с GitHub в 1 клик
+    if (showUpdateDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isDownloadingUpdate) showUpdateDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Обновление с GitHub", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = githubRepoInput,
+                        onValueChange = { githubRepoInput = it },
+                        label = { Text("Ваш репозиторий GitHub") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    val installedTimeStr = remember {
+                        AppUpdateManager.formatTimestamp(AppUpdateManager.getInstalledUpdateTimestamp(context))
+                    }
+                    Text("📱 Установленная версия: $installedTimeStr", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                    if (isCheckingUpdate) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Проверяем релизы на GitHub...", fontSize = 13.sp)
+                        }
+                    } else if (releaseInfo != null) {
+                        val info = releaseInfo!!
+                        Surface(
+                            color = if (info.isNewerThanInstalled) Color(0xFF1B3B22) else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text(
+                                    text = if (info.isNewerThanInstalled) "🚀 Доступна новая сборка на GitHub!"
+                                    else "✅ Установлена последняя версия",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (info.isNewerThanInstalled) Color(0xFFA5D6A7) else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text("📦 Релиз: ${info.releaseTitle}", fontSize = 12.sp)
+                                Text("🕒 Сборка на GitHub: ${info.publishedFormatted}", fontSize = 12.sp)
+                                Text("💾 Файл: ${info.sizeMb}", fontSize = 12.sp)
+                            }
+                        }
+                    }
+
+                    if (isDownloadingUpdate) {
+                        Column {
+                            Text(
+                                text = "Скачивание APK: ${(downloadProgress * 100).roundToInt()}%",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { downloadProgress },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val targetInfo = releaseInfo ?: GitHubReleaseInfo(
+                            repoName = githubRepoInput.trim(),
+                            releaseTitle = "latest-apk",
+                            publishedAtMillis = System.currentTimeMillis(),
+                            publishedFormatted = "Сейчас",
+                            downloadUrl = "https://github.com/${githubRepoInput.trim()}/releases/download/latest-apk/ChefRecipeApp.apk",
+                            sizeMb = "APK",
+                            isNewerThanInstalled = true
+                        )
+                        coroutineScope.launch {
+                            isDownloadingUpdate = true
+                            downloadProgress = 0.05f
+                            val result = AppUpdateManager.downloadAndInstallApk(context, targetInfo) { prog ->
+                                downloadProgress = prog
+                            }
+                            isDownloadingUpdate = false
+                            result.onFailure { err ->
+                                Toast.makeText(context, "Ошибка: ${err.localizedMessage}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    enabled = !isDownloadingUpdate && !isCheckingUpdate
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(if (releaseInfo?.isNewerThanInstalled == true) "Обновить сейчас" else "Скачать и установить APK")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(
+                        onClick = { checkUpdatesNow(showToastIfUpToDate = true) },
+                        enabled = !isDownloadingUpdate && !isCheckingUpdate
+                    ) {
+                        Text("Проверить")
+                    }
+                    TextButton(
+                        onClick = { showUpdateDialog = false },
+                        enabled = !isDownloadingUpdate
+                    ) {
+                        Text("Закрыть")
+                    }
+                }
+            }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
+        // =====================================================================
+        // ЕДИНСТВЕННАЯ КОМПАКТНАЯ ВЕРХНЯЯ СТРОКА (ВЫСОТА 40dp — МАКСИМУМ МЕСТА ДЛЯ БЛЮД!)
+        // =====================================================================
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().height(42.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "Шеф-Повар 🍲",
-                    fontSize = 18.sp,
+                    text = "🍲 Шеф-Повар",
+                    fontSize = 17.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable {
                         currentScreen = AppScreen.RECIPES
                         showOnlyFavorites = false
                     }
                 )
-                IconButton(
-                    onClick = onToggleDarkTheme,
-                    modifier = Modifier.size(32.dp)
-                ) {
+                IconButton(onClick = onToggleDarkTheme, modifier = Modifier.size(30.dp)) {
                     Icon(
                         imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                        contentDescription = "Переключить тему",
+                        contentDescription = "Тема",
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier.size(18.dp)
                     )
+                }
+                // Кнопка проверки и установки обновлений с GitHub
+                Box {
+                    IconButton(
+                        onClick = {
+                            showUpdateDialog = true
+                            checkUpdatesNow(showToastIfUpToDate = false)
+                        },
+                        modifier = Modifier.size(30.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SystemUpdate,
+                            contentDescription = "Обновление с GitHub",
+                            tint = if (releaseInfo?.isNewerThanInstalled == true) Color(0xFF4CAF50)
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    if (releaseInfo?.isNewerThanInstalled == true) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF4CAF50))
+                                .align(Alignment.TopEnd)
+                        )
+                    }
                 }
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Компактная панель быстрых действий справа
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 if (currentlySpeakingId != null) {
-                    AssistChip(
-                        onClick = { speechManager.stop() },
-                        label = { Text("Стоп 🔇", fontSize = 11.sp) },
-                        colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                    )
+                    IconButton(onClick = { speechManager.stop() }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.VolumeOff, contentDescription = "Стоп", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                    }
                 } else {
-                    AssistChip(
-                        onClick = { speechManager.switchVoiceProfile() },
-                        label = { Text("🗣", fontSize = 11.sp) }
+                    IconButton(onClick = { speechManager.switchVoiceProfile() }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.RecordVoiceOver, contentDescription = "Голос", modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                // Кнопка открытия строки поиска
+                IconButton(
+                    onClick = {
+                        currentScreen = AppScreen.RECIPES
+                        isSearchVisible = !isSearchVisible
+                        if (!isSearchVisible) searchQuery = ""
+                    },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Поиск",
+                        tint = if (isSearchVisible || searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp)
                     )
                 }
 
-                FilterChip(
-                    selected = currentScreen == AppScreen.ADD_RECIPE,
+                // Кнопка открытия/сворачивания панели фильтров
+                IconButton(
+                    onClick = {
+                        currentScreen = AppScreen.RECIPES
+                        showOnlyFavorites = false
+                        isFiltersExpanded = !isFiltersExpanded
+                    },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = "Фильтры",
+                        tint = if (isFiltersExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+
+                // Добавить свой рецепт
+                IconButton(
                     onClick = {
                         currentScreen = if (currentScreen == AppScreen.ADD_RECIPE) AppScreen.RECIPES else AppScreen.ADD_RECIPE
                     },
-                    label = { Text("➕", fontSize = 11.sp) }
-                )
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AddCircleOutline,
+                        contentDescription = "Свой рецепт",
+                        tint = if (currentScreen == AppScreen.ADD_RECIPE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
 
-                FilterChip(
-                    selected = currentScreen == AppScreen.SHOPPING_LIST,
+                // Корзина покупок с числом
+                TextButton(
                     onClick = {
                         currentScreen = if (currentScreen == AppScreen.SHOPPING_LIST) AppScreen.RECIPES else AppScreen.SHOPPING_LIST
                     },
-                    label = { Text("🛒 (${shoppingListItems.size})", fontSize = 11.sp) }
-                )
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    modifier = Modifier.height(30.dp)
+                ) {
+                    Text("🛒${shoppingListItems.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
 
-                FilterChip(
-                    selected = showOnlyFavorites && currentScreen == AppScreen.RECIPES,
+                // Избранное с числом
+                TextButton(
                     onClick = {
                         currentScreen = AppScreen.RECIPES
                         showOnlyFavorites = !showOnlyFavorites
                     },
-                    label = { Text("❤️ (${favoriteRecipes.size})", fontSize = 11.sp) }
-                )
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
+                    modifier = Modifier.height(30.dp)
+                ) {
+                    Text(
+                        text = "❤️${favoriteRecipes.size}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (showOnlyFavorites) Color(0xFFE53935) else MaterialTheme.colorScheme.primary
+                    )
+                }
             }
+        }
+
+        // Выдвижная строка поиска (появляется только при нажатии на иконку 🔍)
+        AnimatedVisibility(visible = isSearchVisible && currentScreen == AppScreen.RECIPES) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Поиск по названию, описанию, кухне или продукту...", fontSize = 13.sp) },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                trailingIcon = {
+                    IconButton(onClick = {
+                        searchQuery = ""
+                        isSearchVisible = false
+                    }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "Закрыть поиск", modifier = Modifier.size(16.dp))
+                    }
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            )
         }
 
         when (currentScreen) {
             AppScreen.SHOPPING_LIST -> {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 ShoppingListView(
                     shoppingItems = shoppingListItems,
                     checkedItems = checkedShoppingItems,
@@ -1312,7 +1824,7 @@ fun RecipeAppScreen(
             }
 
             AppScreen.ADD_RECIPE -> {
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 AddCustomRecipeView(
                     cuisines = CulinaryUtils.CUISINES.filter { it != "Все" } + "Домашняя",
                     categories = CulinaryUtils.CATEGORIES.filter { it != "Все" },
@@ -1330,296 +1842,191 @@ fun RecipeAppScreen(
             }
 
             AppScreen.RECIPES -> {
-                if (!isFiltersExpanded && !showOnlyFavorites) {
-                    Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)
-                            .clickable { isFiltersExpanded = true }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "${selectedMode.label} • $selectedCuisine • $selectedCategory",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                                Text(
-                                    text = "Найдено: ${displayedRecipes.size} блюд (нажми для фильтров ▼)",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-                                )
-                            }
-                            FilledTonalButton(
-                                onClick = {
-                                    loadRecipes(
-                                        targetCount = committedLimitCount,
-                                        collapseHeader = true,
-                                        forceNewBatch = true
-                                    )
-                                },
-                                enabled = !isLoading,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                modifier = Modifier.height(34.dp)
-                            ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Новые блюда", modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Новые", fontSize = 12.sp)
-                            }
-                        }
-                    }
-                } else if (!showOnlyFavorites) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
-                            items(DataSourceMode.entries) { mode ->
-                                FilterChip(
-                                    selected = selectedMode == mode,
-                                    onClick = {
-                                        selectedMode = mode
-                                        loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true)
-                                    },
-                                    label = { Text(mode.label, fontSize = 12.sp) }
-                                )
-                            }
-                        }
-                        IconButton(onClick = { isFiltersExpanded = false }) {
-                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Свернуть фильтры")
-                        }
-                    }
-                }
-
+                // Выдвижная панель фильтров (открывается по кнопке 🎛 и автоматически сворачивается после выбора)
                 AnimatedVisibility(visible = isFiltersExpanded && !showOnlyFavorites) {
-                    Column {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .padding(10.dp)
+                                .verticalScroll(rememberScrollState())
+                                .heightIn(max = 360.dp)
                         ) {
-                            Column(modifier = Modifier.padding(8.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("🧊 Что есть в холодильнике:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    if (fridgeItems.isNotEmpty() || lastVoiceCommand != null) {
-                                        Text(
-                                            text = "Очистить всё",
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.clickable {
-                                                fridgeItems.clear()
-                                                lastVoiceCommand = null
-                                                persistAll()
-                                                loadRecipes(forceNewBatch = true)
-                                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
+                                    items(DataSourceMode.entries) { mode ->
+                                        FilterChip(
+                                            selected = selectedMode == mode,
+                                            onClick = {
+                                                selectedMode = mode
+                                                loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true)
+                                            },
+                                            label = { Text(mode.fullLabel, fontSize = 12.sp) }
                                         )
                                     }
                                 }
-
-                                Spacer(modifier = Modifier.height(4.dp))
-
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    OutlinedTextField(
-                                        value = ingredientInput,
-                                        onValueChange = { ingredientInput = it },
-                                        placeholder = { Text("Курица, рис... или нажми 🎤", fontSize = 12.sp) },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1f),
-                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                        keyboardActions = KeyboardActions(onDone = { addIngredientsFromInput() })
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    FilledIconButton(
-                                        onClick = { addIngredientsFromInput() },
-                                        enabled = ingredientInput.isNotBlank()
-                                    ) {
-                                        Icon(Icons.Default.Add, contentDescription = "Добавить")
-                                    }
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    FilledIconButton(
-                                        onClick = { startVoiceRecognition() },
-                                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.tertiary)
-                                    ) {
-                                        Icon(Icons.Default.Mic, contentDescription = "Голосовой подбор")
-                                    }
+                                IconButton(onClick = { isFiltersExpanded = false }, modifier = Modifier.size(28.dp)) {
+                                    Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Свернуть")
                                 }
+                            }
 
-                                if (lastVoiceCommand != null) {
+                            // Холодильник
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("🧊 Продукты в холодильнике:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                if (fridgeItems.isNotEmpty() || lastVoiceCommand != null) {
                                     Text(
-                                        text = "🗣 Запрос: «$lastVoiceCommand»",
+                                        text = "Сбросить (${fridgeItems.size})",
                                         fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.tertiary,
-                                        fontWeight = FontWeight.Medium,
-                                        modifier = Modifier.padding(top = 4.dp)
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.clickable {
+                                            fridgeItems.clear()
+                                            lastVoiceCommand = null
+                                            persistAll()
+                                            loadRecipes(forceNewBatch = true)
+                                        }
                                     )
                                 }
+                            }
 
-                                if (fridgeItems.isNotEmpty()) {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        items(fridgeItems) { item ->
-                                            InputChip(
-                                                selected = true,
-                                                onClick = {
-                                                    fridgeItems.remove(item)
-                                                    persistAll()
-                                                },
-                                                label = { Text(item, fontSize = 11.sp) },
-                                                trailingIcon = {
-                                                    Icon(Icons.Default.Clear, contentDescription = "Удалить", modifier = Modifier.size(14.dp))
-                                                }
-                                            )
-                                        }
-                                    }
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                OutlinedTextField(
+                                    value = ingredientInput,
+                                    onValueChange = { ingredientInput = it },
+                                    placeholder = { Text("Курица, рис... или 🎤", fontSize = 12.sp) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f),
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                    keyboardActions = KeyboardActions(onDone = { addIngredientsFromInput() })
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                FilledIconButton(
+                                    onClick = { addIngredientsFromInput() },
+                                    enabled = ingredientInput.isNotBlank(),
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = "Добавить", modifier = Modifier.size(18.dp))
                                 }
+                                Spacer(modifier = Modifier.width(4.dp))
+                                FilledIconButton(
+                                    onClick = { startVoiceRecognition() },
+                                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.tertiary),
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(Icons.Default.Mic, contentDescription = "Голосом", modifier = Modifier.size(18.dp))
+                                }
+                            }
 
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 2.dp)) {
-                                    items(CulinaryUtils.QUICK_FRIDGE) { suggestion ->
-                                        val isSelected = fridgeItems.contains(suggestion)
-                                        FilterChip(
-                                            selected = isSelected,
+                            if (fridgeItems.isNotEmpty()) {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 4.dp)) {
+                                    items(fridgeItems) { item ->
+                                        InputChip(
+                                            selected = true,
                                             onClick = {
-                                                if (isSelected) fridgeItems.remove(suggestion)
-                                                else fridgeItems.add(suggestion)
+                                                fridgeItems.remove(item)
                                                 persistAll()
                                             },
-                                            label = { Text(if (isSelected) "✓ $suggestion" else "+ $suggestion", fontSize = 11.sp) }
+                                            label = { Text(item, fontSize = 11.sp) },
+                                            trailingIcon = { Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(13.dp)) }
                                         )
                                     }
                                 }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(4.dp))
-
-                        Text("Кухня мира:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(CulinaryUtils.CUISINES) { cuisine ->
-                                FilterChip(
-                                    selected = selectedCuisine == cuisine,
-                                    onClick = {
-                                        selectedCuisine = cuisine
-                                        loadRecipes(selectedMode, cuisine, selectedCategory, forceNewBatch = true)
-                                    },
-                                    label = {
-                                        Text(
-                                            if (cuisine == "Все") "🌍 Все" else CulinaryUtils.formatCuisineWithFlag(cuisine),
-                                            fontSize = 12.sp
-                                        )
-                                    }
-                                )
-                            }
-                        }
-
-                        Text("Тип блюда:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            items(CulinaryUtils.CATEGORIES) { category ->
-                                FilterChip(
-                                    selected = selectedCategory == category,
-                                    onClick = {
-                                        selectedCategory = category
-                                        loadRecipes(selectedMode, selectedCuisine, category, forceNewBatch = true)
-                                    },
-                                    label = { Text(category, fontSize = 12.sp) }
-                                )
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Вариантов: ${sliderPosition.roundToInt()}", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                                Slider(
-                                    value = sliderPosition,
-                                    onValueChange = { sliderPosition = it },
-                                    onValueChangeFinished = {
-                                        val newLimit = sliderPosition.roundToInt()
-                                        if (newLimit != committedLimitCount) {
-                                            committedLimitCount = newLimit
-                                            if (selectedMode != DataSourceMode.LOCAL) {
-                                                loadRecipes(targetCount = newLimit, forceNewBatch = false)
-                                            }
-                                        }
-                                    },
-                                    valueRange = 5f..20f,
-                                    steps = 14
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Button(
-                                onClick = {
-                                    committedLimitCount = sliderPosition.roundToInt()
-                                    loadRecipes(
-                                        targetCount = committedLimitCount,
-                                        collapseHeader = true,
-                                        forceNewBatch = true
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(CulinaryUtils.QUICK_FRIDGE) { suggestion ->
+                                    val isSelected = fridgeItems.contains(suggestion)
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = {
+                                            if (isSelected) fridgeItems.remove(suggestion)
+                                            else fridgeItems.add(suggestion)
+                                            persistAll()
+                                        },
+                                        label = { Text(if (isSelected) "✓ $suggestion" else "+ $suggestion", fontSize = 11.sp) }
                                     )
-                                },
-                                enabled = !isLoading
+                                }
+                            }
+
+                            Text("Кухня мира:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(CulinaryUtils.CUISINES) { cuisine ->
+                                    FilterChip(
+                                        selected = selectedCuisine == cuisine,
+                                        onClick = {
+                                            selectedCuisine = cuisine
+                                            loadRecipes(selectedMode, cuisine, selectedCategory, forceNewBatch = true)
+                                        },
+                                        label = {
+                                            Text(
+                                                if (cuisine == "Все") "🌍 Все" else CulinaryUtils.formatCuisineWithFlag(cuisine),
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+
+                            Text("Категория блюда:", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(CulinaryUtils.CATEGORIES) { category ->
+                                    FilterChip(
+                                        selected = selectedCategory == category,
+                                        onClick = {
+                                            selectedCategory = category
+                                            loadRecipes(selectedMode, selectedCuisine, category, forceNewBatch = true)
+                                        },
+                                        label = { Text(category, fontSize = 11.sp) }
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Подобрать новые", modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Подобрать")
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Количество: ${sliderPosition.roundToInt()} блюд", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                    Slider(
+                                        value = sliderPosition,
+                                        onValueChange = { sliderPosition = it },
+                                        onValueChangeFinished = {
+                                            committedLimitCount = sliderPosition.roundToInt()
+                                        },
+                                        valueRange = 5f..20f,
+                                        steps = 14
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = {
+                                        committedLimitCount = sliderPosition.roundToInt()
+                                        loadRecipes(
+                                            targetCount = committedLimitCount,
+                                            collapseHeader = true,
+                                            forceNewBatch = true
+                                        )
+                                    },
+                                    enabled = !isLoading
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Подобрать")
+                                }
                             }
-                        }
-                    }
-                }
-
-                // Поиск + Сортировка
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Поиск по названию, кухне или продукту...", fontSize = 13.sp) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Поиск", modifier = Modifier.size(18.dp)) },
-                    trailingIcon = {
-                        if (searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
-                                Icon(Icons.Default.Clear, contentDescription = "Сбросить", modifier = Modifier.size(16.dp))
-                            }
-                        }
-                    },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
-                )
-
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
-                ) {
-                    items(SortOrder.entries) { sortOption ->
-                        FilterChip(
-                            selected = selectedSort == sortOption,
-                            onClick = { selectedSort = sortOption },
-                            label = { Text(sortOption.label, fontSize = 11.sp) }
-                        )
-                    }
-                }
-
-                if (showOnlyFavorites) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("❤️ Мои сохраненные рецепты (${favoriteRecipes.size})", fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                        TextButton(onClick = { showOnlyFavorites = false }) {
-                            Text("Ко всем рецептам")
                         }
                     }
                 }
@@ -1631,8 +2038,8 @@ fun RecipeAppScreen(
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
                                 when (selectedMode) {
-                                    DataSourceMode.FREE_AI -> "✨ ИИ придумывает новые блюда (партия #${refreshSeed + 1})..."
-                                    DataSourceMode.MEAL_DB_API -> "🌍 Ищем новые блюда в мировой базе и переводим..."
+                                    DataSourceMode.FREE_AI -> "✨ ИИ придумывает новые блюда с описанием..."
+                                    DataSourceMode.MEAL_DB_API -> "🌍 Загружаем новые блюда из мировой базы..."
                                     DataSourceMode.LOCAL -> "Обновляем подборку рецептов..."
                                 }
                             )
@@ -1646,18 +2053,108 @@ fun RecipeAppScreen(
                                 else "По вашему запросу ничего не найдено"
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            if (showOnlyFavorites || searchQuery.isNotEmpty()) {
-                                Button(onClick = {
-                                    showOnlyFavorites = false
-                                    searchQuery = ""
-                                }) {
-                                    Text("Показать все рецепты")
-                                }
+                            Button(onClick = {
+                                showOnlyFavorites = false
+                                searchQuery = ""
+                                isSearchVisible = false
+                            }) {
+                                Text("Показать все рецепты")
                             }
                         }
                     }
                 } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    // ВСЯ ПАНЕЛЬ СТАТУСА И СОРТИРОВКИ ТЕПЕРЬ ВНУТРИ СПИСКА И УЕЗЖАЕТ ВВЕРХ ПРИ СКРОЛЛЕ!
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        item(key = "scrollable_compact_bar") {
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                // Компактная однострочная капсула фильтров + кнопка "Новые"
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { isFiltersExpanded = !isFiltersExpanded }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (showOnlyFavorites) "❤️ Избранное (${displayedRecipes.size})"
+                                            else "${selectedMode.shortLabel} • $selectedCuisine • $selectedCategory (${displayedRecipes.size}) ▾",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (!showOnlyFavorites) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.primary,
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.clickable {
+                                                    loadRecipes(
+                                                        targetCount = committedLimitCount,
+                                                        collapseHeader = true,
+                                                        forceNewBatch = true
+                                                    )
+                                                }
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Refresh,
+                                                        contentDescription = "Новые",
+                                                        tint = MaterialTheme.colorScheme.onPrimary,
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(3.dp))
+                                                    Text(
+                                                        "Новые",
+                                                        fontSize = 11.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onPrimary
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Быстрый ряд переключателей источника + сортировки в одну тонкую линию
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    items(DataSourceMode.entries) { mode ->
+                                        FilterChip(
+                                            selected = selectedMode == mode && !showOnlyFavorites,
+                                            onClick = {
+                                                showOnlyFavorites = false
+                                                selectedMode = mode
+                                                loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true)
+                                            },
+                                            label = { Text(mode.shortLabel, fontSize = 11.sp) },
+                                            modifier = Modifier.height(28.dp)
+                                        )
+                                    }
+                                    items(SortOrder.entries) { sortOption ->
+                                        FilterChip(
+                                            selected = selectedSort == sortOption,
+                                            onClick = { selectedSort = sortOption },
+                                            label = { Text(sortOption.label, fontSize = 11.sp) },
+                                            modifier = Modifier.height(28.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         itemsIndexed(
                             items = displayedRecipes,
                             key = { _, item -> item.id }
@@ -1735,7 +2232,7 @@ fun RecipeAppScreen(
 }
 
 // =========================================================================
-// 7. ЭКРАН ДОБАВЛЕНИЯ СОБСТВЕННОГО РЕЦЕПТА
+// 9. ЭКРАН ДОБАВЛЕНИЯ СОБСТВЕННОГО РЕЦЕПТА (С ОПИСАНИЕМ БЛЮДА)
 // =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1747,6 +2244,7 @@ fun AddCustomRecipeView(
 ) {
     val context = LocalContext.current
     var title by remember { mutableStateOf("") }
+    var description by remember { mutableStateOf("") }
     var selectedCuisine by remember { mutableStateOf(cuisines.firstOrNull() ?: "Русская") }
     var selectedCategory by remember { mutableStateOf(categories.firstOrNull() ?: "Вторые блюда") }
     var cookingTime by remember { mutableStateOf("35 мин") }
@@ -1774,7 +2272,7 @@ fun AddCustomRecipeView(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         OutlinedTextField(
             value = title,
@@ -1785,7 +2283,18 @@ fun AddCustomRecipeView(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
+
+        OutlinedTextField(
+            value = description,
+            onValueChange = { description = it },
+            label = { Text("Краткое описание блюда (что это за блюдо)") },
+            placeholder = { Text("Сочные домашние пельмени ручной лепки с ароматным бульоном внутри...") },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(modifier = Modifier.height(6.dp))
 
         Text("Кухня:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1798,8 +2307,6 @@ fun AddCustomRecipeView(
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
-
         Text("Категория:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             items(categories) { cat ->
@@ -1811,7 +2318,7 @@ fun AddCustomRecipeView(
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
@@ -1830,7 +2337,7 @@ fun AddCustomRecipeView(
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         OutlinedTextField(
             value = ingredientsText,
@@ -1841,7 +2348,7 @@ fun AddCustomRecipeView(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         OutlinedTextField(
             value = instructionsText,
@@ -1852,7 +2359,7 @@ fun AddCustomRecipeView(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         OutlinedTextField(
             value = customImageUrl,
@@ -1863,7 +2370,7 @@ fun AddCustomRecipeView(
             modifier = Modifier.fillMaxWidth()
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
         Button(
             onClick = {
@@ -1880,6 +2387,8 @@ fun AddCustomRecipeView(
                     .filter { it.isNotEmpty() }
 
                 val finalSteps = CulinaryUtils.ensureValidInstructions(rawSteps, title.trim(), parsedIngs)
+                val finalDesc = if (description.isNotBlank()) description.trim()
+                else CulinaryUtils.buildDishDescription(title.trim(), selectedCuisine, selectedCategory, parsedIngs)
 
                 val encodedTitle = URLEncoder.encode(title.trim(), "UTF-8").replace("+", "%20")
                 val autoImg1 = "https://image.pollinations.ai/prompt/$encodedTitle%20delicious%20dish%20food%20photography?width=600&height=400&nologo=true&seed=10"
@@ -1894,6 +2403,7 @@ fun AddCustomRecipeView(
                 val newRecipe = Recipe(
                     id = "custom_${System.currentTimeMillis()}",
                     title = title.trim(),
+                    description = finalDesc,
                     cuisine = selectedCuisine,
                     category = selectedCategory,
                     cookingTime = cookingTime.ifBlank { "30 мин" },
@@ -1916,7 +2426,7 @@ fun AddCustomRecipeView(
 }
 
 // =========================================================================
-// 8. ЭКРАН СПИСКА ПОКУПОК
+// 10. ЭКРАН СПИСКА ПОКУПОК
 // =========================================================================
 @Composable
 fun ShoppingListView(
@@ -2084,7 +2594,7 @@ fun ShoppingListView(
 }
 
 // =========================================================================
-// 9. КАРТОЧКА РЕЦЕПТА С ПРОГРЕССОМ ШАГОВ И РЕАЛЬНЫМИ ФЛАГАМИ СТРАН
+// 11. КАРТОЧКА РЕЦЕПТА С БЛОКОМ КРАТКОГО ОПИСАНИЯ БЛЮДА
 // =========================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -2145,7 +2655,7 @@ fun RecipeCard(
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2162,17 +2672,17 @@ fun RecipeCard(
                     }
                     Text(
                         text = "#$index. ${recipe.title}",
-                        fontSize = 19.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
                 Row {
                     if (onDeleteCustom != null) {
-                        IconButton(onClick = onDeleteCustom) {
+                        IconButton(onClick = onDeleteCustom, modifier = Modifier.size(34.dp)) {
                             Icon(Icons.Default.Delete, contentDescription = "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    IconButton(onClick = onToggleFavorite) {
+                    IconButton(onClick = onToggleFavorite, modifier = Modifier.size(34.dp)) {
                         Icon(
                             imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
                             contentDescription = "Избранное",
@@ -2182,8 +2692,9 @@ fun RecipeCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(4.dp))
 
+            // Бейджи с реальной страной/кухней, категорией, временем и калориями
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 item {
                     Surface(
@@ -2192,10 +2703,10 @@ fun RecipeCard(
                     ) {
                         Text(
                             text = CulinaryUtils.formatCuisineWithFlag(recipe.cuisine),
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
                 }
@@ -2206,10 +2717,10 @@ fun RecipeCard(
                     ) {
                         Text(
                             text = "🍽 ${recipe.category}",
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
                 }
@@ -2220,9 +2731,9 @@ fun RecipeCard(
                     ) {
                         Text(
                             text = "⏱ ${recipe.cookingTime}",
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
                 }
@@ -2233,11 +2744,29 @@ fun RecipeCard(
                     ) {
                         Text(
                             text = "🔥 ${recipe.calories} ккал",
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                         )
                     }
+                }
+            }
+
+            // НОВЫЙ БЛОК: КРАТКОЕ ОПИСАНИЕ БЛЮДА (что это за блюдо, его вкус и подача)
+            if (recipe.description.isNotBlank()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "📖 ${recipe.description}",
+                        fontSize = 13.sp,
+                        fontStyle = FontStyle.Italic,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
                 }
             }
 
@@ -2247,6 +2776,7 @@ fun RecipeCard(
                 onClick = {
                     val fullSpeech = buildString {
                         append("Рецепт: ${recipe.title}. ")
+                        append("${recipe.description} ")
                         append("Кухня: ${recipe.cuisine}. Время готовки: ${recipe.cookingTime}. ")
                         append("Ингредиенты на $portions порции: ")
                         append(scaledIngredients.joinToString(". "))
@@ -2258,21 +2788,26 @@ fun RecipeCard(
                     }
                     onSpeakText(fullRecipeUtteranceId, fullSpeech)
                 },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                modifier = Modifier.fillMaxWidth().height(36.dp)
             ) {
                 Icon(
                     imageVector = if (isSpeakingFullRecipe) Icons.Default.Stop else Icons.Default.VolumeUp,
-                    contentDescription = "Озвучить рецепт"
+                    contentDescription = "Озвучить рецепт",
+                    modifier = Modifier.size(17.dp)
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(if (isSpeakingFullRecipe) "⏹ Остановить озвучку" else "🔊 Озвучить весь рецепт голосом")
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    if (isSpeakingFullRecipe) "⏹ Остановить озвучку" else "🔊 Озвучить описание и рецепт",
+                    fontSize = 13.sp
+                )
             }
 
             if (fridgeItems.isNotEmpty()) {
                 Surface(
                     color = badgeBgColor,
                     shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.padding(vertical = 4.dp)
+                    modifier = Modifier.padding(top = 4.dp)
                 ) {
                     Text(
                         text = if (needToBuyCount == 0)
@@ -2294,7 +2829,7 @@ fun RecipeCard(
             }
             val pagerState = rememberPagerState(pageCount = { safeImages.size })
 
-            Box(modifier = Modifier.fillMaxWidth().height(205.dp)) {
+            Box(modifier = Modifier.fillMaxWidth().height(195.dp)) {
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                     val imgReq = remember(safeImages[page]) {
                         ImageRequest.Builder(context)
@@ -2337,7 +2872,7 @@ fun RecipeCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(10.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -2601,7 +3136,7 @@ fun StepTimerWidget(
 }
 
 // =========================================================================
-// 10. УМНЫЙ РЕПОЗИТОРИЙ С РОТАЦИЕЙ НОВЫХ БЛЮД И ОПРЕДЕЛЕНИЕМ РЕАЛЬНОЙ КУХНИ
+// 12. РЕПОЗИТОРИЙ С ОПИСАНИЯМИ БЛЮД, РОТАЦИЕЙ И ТОЧНЫМИ КУХНЯМИ
 // =========================================================================
 object RecipeRepository {
     private val translationSemaphore = Semaphore(4)
@@ -2752,16 +3287,16 @@ object RecipeRepository {
                 Кухня: ${if (cuisine == "Все") "разные страны мира (укажи реальную кухню для каждого блюда: Русская, Корейская, Итальянская, Японская, Французская, Грузинская, Мексиканская, Китайская, Тайская и т.д.)" else cuisine}.
                 Категория: ${if (category == "Все") "разные категории (Супы, Вторые блюда, Салаты, Выпечка, Что-то к чаю)" else category}.
                 $fridgeText $voiceText $excludeText
-                У каждого блюда должно быть минимум 3 подробных шага в массиве instructions с временем в минутах, и поле englishName (название на английском для фото).
+                Для каждого блюда обязательно добавь поле description (1-2 предложения: что это за блюдо, его вкус и подача).
                 Верни ТОЛЬКО валидный JSON массив:
-                [{"title":"Название на русском","englishName":"dish name","cuisine":"Точная кухня (например Корейская)","category":"Точная категория","cookingTime":"35 мин","difficulty":"Легко","calories":250,"ingredients":["Продукт - 200 г"],"instructions":["Шаг 1. Подготовьте продукты.","Шаг 2. Обжарьте 10 минут.","Шаг 3. Варите 15 минут."]}]
+                [{"title":"Название на русском","description":"Краткое аппетитное описание блюда","englishName":"dish name","cuisine":"Точная кухня","category":"Точная категория","cookingTime":"35 мин","difficulty":"Легко","calories":250,"ingredients":["Продукт - 200 г"],"instructions":["Шаг 1. Подготовьте продукты.","Шаг 2. Обжарьте 10 минут.","Шаг 3. Варите 15 минут."]}]
             """.trimIndent()
 
             val payload = JSONObject().apply {
                 put("model", "openai")
                 put("seed", Random.nextInt(1, 999999))
                 put("messages", JSONArray().apply {
-                    put(JSONObject().put("role", "system").put("content", "Отвечай строго валидным JSON массивом новых рецептов исключительно на русском языке."))
+                    put(JSONObject().put("role", "system").put("content", "Отвечай строго валидным JSON массивом новых рецептов с полем description исключительно на русском языке."))
                     put(JSONObject().put("role", "user").put("content", userPrompt))
                 })
             }
@@ -2816,11 +3351,15 @@ object RecipeRepository {
                         ruTitle,
                         category
                     )
+                    val rawDesc = translateEnToRu(obj.optString("description", ""))
+                    val finalDesc = if (rawDesc.length > 10) rawDesc
+                    else CulinaryUtils.buildDishDescription(ruTitle, realCuisine, realCategory, ingList)
 
                     aiResult.add(
                         Recipe(
                             id = "ai_${refreshSeed}_${ruTitle.hashCode()}_$i",
                             title = ruTitle,
+                            description = finalDesc,
                             cuisine = realCuisine,
                             category = realCategory,
                             cookingTime = CulinaryUtils.normalizeAndTranslateCulinary(obj.optString("cookingTime", "35 мин")),
@@ -2966,6 +3505,7 @@ object RecipeRepository {
 
                                 val realRussianCuisine = CulinaryUtils.resolveRealCuisine(enArea, ruTitle, cuisine)
                                 val realRussianCategory = CulinaryUtils.resolveRealCategory(enCategory, ruTitle, category)
+                                val dishDesc = CulinaryUtils.buildDishDescription(ruTitle, realRussianCuisine, realRussianCategory, ruIngredients)
 
                                 val mainPhoto = detailObj.optString("strMealThumb", "")
                                 val encodedIng = URLEncoder.encode(firstIngNameEn, "UTF-8").replace("+", "%20")
@@ -2974,6 +3514,7 @@ object RecipeRepository {
                                 val builtRecipe = Recipe(
                                     id = "mealdb_$mealId",
                                     title = ruTitle,
+                                    description = dishDesc,
                                     cuisine = realRussianCuisine,
                                     category = realRussianCategory,
                                     cookingTime = "${25 + (i * 5) % 35} мин",
@@ -3066,6 +3607,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_borscht",
             title = "Классический борщ с говядиной и сметаной",
+            description = "Традиционный густой суп насыщенного рубинового цвета на наваристом говяжьем бульоне со свеклой, свежей капустой и чесноком.",
             cuisine = "Русская",
             category = "Супы",
             cookingTime = "1 ч 20 мин",
@@ -3086,6 +3628,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_chicken_rice",
             title = "Курица с рисом и овощами на одной сковороде",
+            description = "Удобное и сытное домашнее блюдо в одной посуде: сочные кусочки курицы и рассыпчатый рис, пропитанные ароматом чеснока и моркови.",
             cuisine = "Русская",
             category = "Вторые блюда",
             cookingTime = "40 мин",
@@ -3106,6 +3649,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_kartoshka",
             title = "Домашнее пирожное «Картошка» с соленой карамелью",
+            description = "Знаменитый шоколадно-песочный десерт без выпечки с бархатистой текстурой какао и насыщенным вкусом карамельной сгущенки.",
             cuisine = "Русская",
             category = "Что-то к чаю",
             cookingTime = "30 мин",
@@ -3126,6 +3670,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_syrniki",
             title = "Пышные творожные сырники на завтрак",
+            description = "Нежные домашние сырники с румяной золотистой корочкой и мягкой творожной серединкой, подаются со сметаной или ягодами.",
             cuisine = "Русская",
             category = "Каши и завтраки",
             cookingTime = "25 мин",
@@ -3145,6 +3690,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_stroganoff",
             title = "Бефстроганов из говядины с грибами в сметанном соусе",
+            description = "Классическое блюдо русской кухни: тонкие ломтики сочной говядины, томленные с шампиньонами и луком в густом сливочно-сметанном соусе.",
             cuisine = "Русская",
             category = "Вторые блюда",
             cookingTime = "45 мин",
@@ -3165,6 +3711,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_charlottka",
             title = "Пышная домашняя шарлотка с яблоками и корицей",
+            description = "Воздушный бисквитный пирог с сочной кисло-сладкой яблочной начинкой и теплым пряным ароматом молотой корицы.",
             cuisine = "Русская",
             category = "Выпечка",
             cookingTime = "45 мин",
@@ -3184,6 +3731,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_olivier",
             title = "Домашний салат Оливье с куриным филе",
+            description = "Любимый праздничный и повседневный салат из нежного куриного филе, отварных овощей, маринованных огурчиков и зеленого горошка.",
             cuisine = "Русская",
             category = "Салаты",
             cookingTime = "30 мин",
@@ -3203,6 +3751,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_kimchi_soup",
             title = "Острый корейский суп Кимчи Тиге со свининой и тофу",
+            description = "Знаменитый согревающий суп корейской кухни с пикантной ферментированной капустой кимчи, нежным сыром тофу и мясом.",
             cuisine = "Корейская",
             category = "Супы",
             cookingTime = "35 мин",
@@ -3222,6 +3771,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_korean_chicken",
             title = "Хрустящая курица по-корейски в кисло-сладком соусе Яннём",
+            description = "Популярный корейский хит: кусочки курицы в тонкой хрустящей корочке, покрытые глянцевой медово-чесночной глазурью с кунжутом.",
             cuisine = "Корейская",
             category = "Вторые блюда",
             cookingTime = "40 мин",
@@ -3241,6 +3791,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_bibimbap",
             title = "Пибимпап (Корейский рис с говядиной, овощами и яйцом)",
+            description = "Красочная корейская чаша на основе теплого риса, украшенная обжаренным пряным мясом, соломкой овощей и яичницей с жидким желтком.",
             cuisine = "Корейская",
             category = "Вторые блюда",
             cookingTime = "30 мин",
@@ -3260,6 +3811,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_french_gratin",
             title = "Французский картофельный гратен Дофинуа со сливками и сыром",
+            description = "Изысканная французская запеканка из тончайших ломтиков картофеля, томленных в чесночных сливках под румяной сырной корочкой.",
             cuisine = "Французская",
             category = "Вторые блюда",
             cookingTime = "50 мин",
@@ -3279,6 +3831,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_french_soup",
             title = "Французский луковый суп с сырными гренками",
+            description = "Классика парижских бистро: густой бульон из карамелизированного в сливочном масле лука, запеченный под шапкой из багета и тягучего сыра.",
             cuisine = "Французская",
             category = "Супы",
             cookingTime = "45 мин",
@@ -3298,6 +3851,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_croissants",
             title = "Французские круассаны с запеченным миндальным кремом",
+            description = "Хрустящая слоеная выпечка с нежной орехово-сливочной начинкой франжипан и сахарной пудрой — идеальное дополнение к утреннему чаю или кофе.",
             cuisine = "Французская",
             category = "Что-то к чаю",
             cookingTime = "30 мин",
@@ -3317,6 +3871,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_julienne",
             title = "Французский жульен с курицей и грибами под сырной корочкой",
+            description = "Горячая сливочно-грибная закуска с нежным куриным филе и тягучей золотистой корочкой запеченного сыра.",
             cuisine = "Французская",
             category = "Вторые блюда",
             cookingTime = "30 мин",
@@ -3336,6 +3891,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_carbonara",
             title = "Итальянская паста Карбонара с беконом и Пармезаном",
+            description = "Знаменитая римская паста с хрустящими ломтиками бекона и шелковистым соусом на основе яичных желтков и тертого сыра Пармезан.",
             cuisine = "Итальянская",
             category = "Паста и пицца",
             cookingTime = "20 мин",
@@ -3356,6 +3912,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_pizza",
             title = "Домашняя итальянская пицца Маргарита с томатами и Моцареллой",
+            description = "Классическая неаполитанская пицца на тонком тесте с ароматным томатным соусом, тягучей Моцареллой и свежим базиликом.",
             cuisine = "Итальянская",
             category = "Паста и пицца",
             cookingTime = "30 мин",
@@ -3375,6 +3932,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_caesar",
             title = "Салат Цезарь с обжаренной куриной грудкой, сыром и сухариками",
+            description = "Легкий и хрустящий салат из свежих листьев с румяными ломтиками куриного филе, чесночными гренками, черри и тертым сыром.",
             cuisine = "Итальянская",
             category = "Салаты",
             cookingTime = "25 мин",
@@ -3394,6 +3952,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_khachapuri",
             title = "Грузинский хачапури по-аджарски с сыром и желтком",
+            description = "Знаменитая грузинская открытая лепешка-лодочка с расплавленным тягучим сыром Сулугуни, сливочным маслом и жидким яичным желтком.",
             cuisine = "Грузинская",
             category = "Выпечка",
             cookingTime = "45 мин",
@@ -3414,6 +3973,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_chkmeruli",
             title = "Чкмерули (Курица по-грузински в сливочно-чесночном соусе)",
+            description = "Румяная зажаренная курица, томленная в густом соусе из сливок, чеснока, кинзы и грузинских пряностей хмели-сунели.",
             cuisine = "Грузинская",
             category = "Вторые блюда",
             cookingTime = "40 мин",
@@ -3433,6 +3993,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_ramen",
             title = "Японский домашний Рамен с курицей, лапшой и яйцом",
+            description = "Насыщенный японский суп с пшеничной лапшой, пряным соево-чесночным бульоном, ломтиками курицы, грибами и яйцом всмятку.",
             cuisine = "Японская",
             category = "Супы",
             cookingTime = "35 мин",
@@ -3452,6 +4013,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_teriyaki",
             title = "Курица Терияки с кунжутом и рассыпчатым рисом",
+            description = "Быстрое японское блюдо: сочные кусочки курицы, карамелизированные в густом сладко-соленом соусе терияки с рассыпчатым рисом.",
             cuisine = "Японская",
             category = "Вторые блюда",
             cookingTime = "25 мин",
@@ -3471,6 +4033,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_quesadilla",
             title = "Мексиканская Кесадилья с курицей, сыром и томатами",
+            description = "Хрустящие пшеничные лепешки тортильи с горячей начинкой из обжаренного куриного филе, сладкой кукурузы, томатов и расплавленного сыра.",
             cuisine = "Мексиканская",
             category = "Вторые блюда",
             cookingTime = "20 мин",
@@ -3490,6 +4053,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_tomyum",
             title = "Тайский суп Том Ям с креветками, грибами и кокосовым молоком",
+            description = "Знаменитый кисло-острый суп Таиланда на нежном кокосовом молоке с креветками, шампиньонами, томатами черри и свежим соком лайма.",
             cuisine = "Тайская",
             category = "Супы",
             cookingTime = "25 мин",
@@ -3509,6 +4073,7 @@ object RecipeRepository {
         Recipe(
             id = "loc_tikka",
             title = "Индийская Курица Тикка Масала в пряном томатно-сливочном соусе",
+            description = "Ароматное блюдо индийской кухни: мягкие кусочки куриного филе, тушенные в бархатистом соусе из сливок, томатов, чеснока и специй карри.",
             cuisine = "Индийская",
             category = "Вторые блюда",
             cookingTime = "35 мин",
