@@ -73,9 +73,11 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
+import kotlin.random.Random
 
 // =========================================================================
 // 1. ТЕМА И ЦВЕТОВЫЕ ПАЛИТРЫ
@@ -190,7 +192,8 @@ enum class DataSourceMode(val label: String) {
 }
 
 enum class SortOrder(val label: String) {
-    FRIDGE_MATCH("🧊 По продуктам"),
+    FRESH_BATCH("🎲 По новизне"),
+    FRIDGE_MATCH("🧊 По холодильнику"),
     FASTEST("⚡ Быстрые"),
     LOW_CALORIE("🥗 Легкие")
 }
@@ -202,12 +205,144 @@ enum class AppScreen {
 }
 
 // =========================================================================
-// 3. ПРЕДКОМПИЛИРОВАННЫЕ УТИЛИТЫ И ПОЛНЫЙ КУЛИНАРНЫЙ ПЕРЕВОДЧИК
+// 3. КУЛИНАРНЫЕ УТИЛИТЫ, МАППЕР РЕАЛЬНЫХ КУХОНЬ МИРА И ПЕРЕВОДЧИК
 // =========================================================================
 object CulinaryUtils {
-    val CUISINES = listOf("Все", "Русская", "Корейская", "Французская", "Итальянская", "Японская", "Грузинская", "Мексиканская")
+    val CUISINES = listOf(
+        "Все", "Русская", "Корейская", "Французская", "Итальянская",
+        "Японская", "Грузинская", "Мексиканская", "Китайская", "Тайская", "Индийская"
+    )
     val CATEGORIES = listOf("Все", "Супы", "Каши и завтраки", "Вторые блюда", "Выпечка", "Что-то к чаю", "Салаты", "Паста и пицца")
     val QUICK_FRIDGE = listOf("Курица", "Яйца", "Картофель", "Сыр", "Томаты", "Молоко", "Рис", "Фарш", "Творог", "Капуста", "Грибы")
+
+    // Полная карта стран происхождения из TheMealDB -> реальное название кухни на русском
+    private val AREA_TO_RUSSIAN_CUISINE = mapOf(
+        "russian" to "Русская",
+        "korean" to "Корейская",
+        "french" to "Французская",
+        "italian" to "Итальянская",
+        "japanese" to "Японская",
+        "georgian" to "Грузинская",
+        "mexican" to "Мексиканская",
+        "chinese" to "Китайская",
+        "thai" to "Тайская",
+        "indian" to "Индийская",
+        "greek" to "Греческая",
+        "spanish" to "Испанская",
+        "turkish" to "Турецкая",
+        "vietnamese" to "Вьетнамская",
+        "moroccan" to "Марокканская",
+        "american" to "Американская",
+        "british" to "Британская",
+        "polish" to "Польская",
+        "ukrainian" to "Украинская",
+        "croatian" to "Хорватская",
+        "irish" to "Ирландская",
+        "jamaican" to "Ямайская",
+        "egyptian" to "Египетская",
+        "dutch" to "Голландская",
+        "portuguese" to "Португальская",
+        "canadian" to "Канадская",
+        "malaysian" to "Малайзийская",
+        "tunisian" to "Тунисская",
+        "filipino" to "Филиппинская",
+        "kenyan" to "Кенийская",
+        "norwegian" to "Норвежская",
+        "australian" to "Австралийская"
+    )
+
+    // Флаги для красивого отображения реальной кухни на карточке
+    private val CUISINE_FLAGS = mapOf(
+        "Русская" to "🇷🇺",
+        "Корейская" to "🇰🇷",
+        "Французская" to "🇫🇷",
+        "Итальянская" to "🇮🇹",
+        "Японская" to "🇯🇵",
+        "Грузинская" to "🇬🇪",
+        "Мексиканская" to "🇲🇽",
+        "Китайская" to "🇨🇳",
+        "Тайская" to "🇹🇭",
+        "Индийская" to "🇮🇳",
+        "Греческая" to "🇬🇷",
+        "Испанская" to "🇪🇸",
+        "Турецкая" to "🇹🇷",
+        "Вьетнамская" to "🇻🇳",
+        "Марокканская" to "🇲🇦",
+        "Американская" to "🇺🇸",
+        "Британская" to "🇬🇧",
+        "Польская" to "🇵🇱",
+        "Украинская" to "🇺🇦",
+        "Хорватская" to "🇭🇷",
+        "Ирландская" to "🇮🇪",
+        "Ямайская" to "🇯🇲",
+        "Египетская" to "🇪🇬",
+        "Голландская" to "🇳🇱",
+        "Португальская" to "🇵🇹",
+        "Канадская" to "🇨🇦",
+        "Малайзийская" to "🇲🇾",
+        "Тунисская" to "🇹🇳",
+        "Филиппинская" to "🇵🇭",
+        "Домашняя" to "🏠"
+    )
+
+    // Определение реальной кухни по данным API и ключевым словам в названии блюда
+    fun resolveRealCuisine(rawArea: String?, dishTitle: String, selectedFilterCuisine: String): String {
+        val cleanArea = rawArea?.trim()?.lowercase() ?: ""
+        if (cleanArea.isNotEmpty() && cleanArea != "unknown") {
+            AREA_TO_RUSSIAN_CUISINE[cleanArea]?.let { return it }
+            // Если ИИ уже вернул русское название кухни
+            if (!hasLatin(cleanArea)) {
+                val cap = cleanArea.replaceFirstChar { it.uppercase() }
+                if (cap != "Все" && cap != "Любая" && cap != "Разные") return cap
+            }
+        }
+
+        // Распознавание по характерным словам в названии блюда, если поле страны спорное/пустое
+        val lowerTitle = dishTitle.lowercase()
+        when {
+            lowerTitle.contains("кимчи") || lowerTitle.contains("корейск") || lowerTitle.contains("пибимпап") || lowerTitle.contains("токпокки") || lowerTitle.contains("яннём") -> return "Корейская"
+            lowerTitle.contains("борщ") || lowerTitle.contains("сырник") || lowerTitle.contains("строганов") || lowerTitle.contains("пельмен") || lowerTitle.contains("оливье") || lowerTitle.contains("блин") -> return "Русская"
+            lowerTitle.contains("рамен") || lowerTitle.contains("терияки") || lowerTitle.contains("суши") || lowerTitle.contains("удон") || lowerTitle.contains("мисо") || lowerTitle.contains("японск") -> return "Японская"
+            lowerTitle.contains("паста") || lowerTitle.contains("карбонара") || lowerTitle.contains("пицца") || lowerTitle.contains("лазанья") || lowerTitle.contains("ризотто") || lowerTitle.contains("тирамису") -> return "Итальянская"
+            lowerTitle.contains("круассан") || lowerTitle.contains("гратен") || lowerTitle.contains("жюльен") || lowerTitle.contains("жульен") || lowerTitle.contains("рататуй") || lowerTitle.contains("французск") -> return "Французская"
+            lowerTitle.contains("хачапури") || lowerTitle.contains("чкмерули") || lowerTitle.contains("хинкали") || lowerTitle.contains("харчо") || lowerTitle.contains("грузинск") -> return "Грузинская"
+            lowerTitle.contains("кесадилья") || lowerTitle.contains("тако") || lowerTitle.contains("буррито") || lowerTitle.contains("гуакамоле") || lowerTitle.contains("мексиканск") -> return "Мексиканская"
+            lowerTitle.contains("том ям") || lowerTitle.contains("пад тай") || lowerTitle.contains("тайск") -> return "Тайская"
+            lowerTitle.contains("карри") || lowerTitle.contains("масала") || lowerTitle.contains("индийск") -> return "Индийская"
+            lowerTitle.contains("вок") || lowerTitle.contains("кисло-сладк") || lowerTitle.contains("китайск") -> return "Китайская"
+        }
+
+        if (selectedFilterCuisine != "Все") return selectedFilterCuisine
+        return "Мировая"
+    }
+
+    // Определение реальной категории блюда из TheMealDB
+    fun resolveRealCategory(rawCategory: String?, dishTitle: String, selectedFilterCategory: String): String {
+        if (selectedFilterCategory != "Все") return selectedFilterCategory
+        val lowerTitle = dishTitle.lowercase()
+        if (lowerTitle.contains("суп") || lowerTitle.contains("борщ") || lowerTitle.contains("рамен") || lowerTitle.contains("бульон") || lowerTitle.contains("том ям")) {
+            return "Супы"
+        }
+        if (lowerTitle.contains("салат") || lowerTitle.contains("цезарь") || lowerTitle.contains("оливье")) {
+            return "Салаты"
+        }
+        val cleanCat = rawCategory?.trim()?.lowercase() ?: ""
+        return when (cleanCat) {
+            "starter" -> "Супы и закуски"
+            "breakfast" -> "Каши и завтраки"
+            "dessert" -> "Что-то к чаю"
+            "pasta" -> "Паста и пицца"
+            "side" -> "Салаты и гарниры"
+            "beef", "chicken", "pork", "lamb", "seafood", "goat", "miscellaneous" -> "Вторые блюда"
+            "vegan", "vegetarian" -> "Овощные блюда"
+            else -> if (!hasLatin(cleanCat) && cleanCat.isNotEmpty()) cleanCat.replaceFirstChar { it.uppercase() } else "Вторые блюда"
+        }
+    }
+
+    fun formatCuisineWithFlag(cuisine: String): String {
+        val flag = CUISINE_FLAGS[cuisine] ?: "🌍"
+        return "$flag $cuisine"
+    }
 
     private val TIMER_REGEX = Regex("(\\d+)\\s*(мин(?:ут[а-хей]?)?|час(?:[а-ов]?)?|сек(?:унд[а-хей]?)?)", RegexOption.IGNORE_CASE)
     private val NUMBER_REGEX = Regex("(\\d+(?:[.,]\\d+)?)")
@@ -601,7 +736,8 @@ object CulinaryUtils {
 
         val cuisineRoots = mapOf(
             "русск" to "Русская", "корейск" to "Корейская", "французск" to "Французская",
-            "итальянск" to "Итальянская", "японск" to "Японская", "грузинск" to "Грузинская", "мексиканск" to "Мексиканская"
+            "итальянск" to "Итальянская", "японск" to "Японская", "грузинск" to "Грузинская",
+            "мексиканск" to "Мексиканская", "китайск" to "Китайская", "тайск" to "Тайская", "индийск" to "Индийская"
         )
         cuisineRoots.forEach { (root, name) -> if (lower.contains(root)) newCuisine = name }
 
@@ -651,10 +787,10 @@ object CulinaryUtils {
 }
 
 // =========================================================================
-// 4. АСИНХРОННЫЙ МЕНЕДЖЕР ХРАНИЛИЩА (SHARED PREFERENCES БЕЗ ЛАГОВ UI)
+// 4. АСИНХРОННЫЙ МЕНЕДЖЕР ХРАНИЛИЩА
 // =========================================================================
 class RecipeStorage(context: Context) {
-    private val prefs = context.getSharedPreferences("chef_app_v7_storage", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("chef_app_v8_storage", Context.MODE_PRIVATE)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun isDarkTheme(systemDefault: Boolean): Boolean =
@@ -702,7 +838,7 @@ class RecipeStorage(context: Context) {
 }
 
 // =========================================================================
-// 5. ИСПРАВЛЕННЫЙ КОНТРОЛЛЕР ГОЛОСОВОЙ ОЗВУЧКИ (С ТОЧНЫМ СОСТОЯНИЕМ КНОПКИ)
+// 5. КОНТРОЛЛЕР ГОЛОСОВОЙ ОЗВУЧКИ
 // =========================================================================
 class SpeechManager(
     private val context: Context,
@@ -746,7 +882,6 @@ class SpeechManager(
                         }
 
                         override fun onDone(utteranceId: String?) {
-                            // Сбрасываем состояние только когда дочитана ПОСЛЕДНЯЯ фраза рецепта (_last)
                             if (utteranceId != null && utteranceId.endsWith("_last")) {
                                 mainHandler.post { updateState(null) }
                             }
@@ -830,7 +965,6 @@ class SpeechManager(
             if (spokeOk) return
         }
 
-        // Поочередное воспроизведение всех фраз через облачный поток (если системный TTS отсутствует)
         playCloudChunksSequentially(rootUtteranceId, sentences, 0)
     }
 
@@ -933,9 +1067,10 @@ fun RecipeAppScreen(
     var selectedMode by remember { mutableStateOf(DataSourceMode.LOCAL) }
     var selectedCuisine by remember { mutableStateOf("Все") }
     var selectedCategory by remember { mutableStateOf("Все") }
-    var selectedSort by remember { mutableStateOf(SortOrder.FRIDGE_MATCH) }
+    var selectedSort by remember { mutableStateOf(SortOrder.FRESH_BATCH) }
     var sliderPosition by remember { mutableFloatStateOf(10f) }
     var committedLimitCount by remember { mutableIntStateOf(10) }
+    var refreshSeed by remember { mutableIntStateOf(0) }
     var searchQuery by remember { mutableStateOf("") }
     var showOnlyFavorites by remember { mutableStateOf(false) }
     var isFiltersExpanded by remember { mutableStateOf(true) }
@@ -955,31 +1090,37 @@ fun RecipeAppScreen(
 
     var recipes by remember {
         mutableStateOf(
-            RecipeRepository.buildLocalDatabaseRecipes("Все", "Все", emptyList(), customUserRecipes, 10)
+            RecipeRepository.buildLocalDatabaseRecipes("Все", "Все", emptyList(), customUserRecipes, 10, 0)
         )
     }
     var isLoading by remember { mutableStateOf(false) }
     var activeLoadJob by remember { mutableStateOf<Job?>(null) }
 
+    // При каждом вызове с forceNewBatch = true увеличивается refreshSeed и ищутся НОВЫЕ блюда!
     fun loadRecipes(
         modeToUse: DataSourceMode = selectedMode,
         cuisineToUse: String = selectedCuisine,
         categoryToUse: String = selectedCategory,
         targetCount: Int = committedLimitCount,
         voiceText: String? = lastVoiceCommand,
-        collapseHeader: Boolean = false
+        collapseHeader: Boolean = false,
+        forceNewBatch: Boolean = false
     ) {
         speechManager.stop()
         if (collapseHeader) isFiltersExpanded = false
+        if (forceNewBatch) {
+            refreshSeed += 1
+            selectedSort = SortOrder.FRESH_BATCH
+        }
+        val currentSeed = refreshSeed
         val currentFridge = fridgeItems.toList()
         val currentCustom = customUserRecipes.toList()
 
-        // Отменяем предыдущий незавершенный сетевой запрос, чтобы избежать гонки потоков
         activeLoadJob?.cancel()
         activeLoadJob = coroutineScope.launch {
             if (modeToUse == DataSourceMode.LOCAL) {
                 recipes = RecipeRepository.buildLocalDatabaseRecipes(
-                    cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount
+                    cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount, currentSeed
                 )
                 isLoading = false
                 return@launch
@@ -989,17 +1130,25 @@ fun RecipeAppScreen(
             try {
                 recipes = when (modeToUse) {
                     DataSourceMode.LOCAL -> {
-                        RecipeRepository.buildLocalDatabaseRecipes(cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount)
+                        RecipeRepository.buildLocalDatabaseRecipes(
+                            cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount, currentSeed
+                        )
                     }
                     DataSourceMode.MEAL_DB_API -> {
-                        RecipeRepository.fetchTranslatedMealDbRecipes(cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount)
+                        RecipeRepository.fetchTranslatedMealDbRecipes(
+                            cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount, currentSeed
+                        )
                     }
                     DataSourceMode.FREE_AI -> {
-                        RecipeRepository.fetchAiRussianRecipes(cuisineToUse, categoryToUse, currentFridge, currentCustom, voiceText, targetCount)
+                        RecipeRepository.fetchAiRussianRecipes(
+                            cuisineToUse, categoryToUse, currentFridge, currentCustom, voiceText, targetCount, currentSeed
+                        )
                     }
                 }
             } catch (_: Exception) {
-                recipes = RecipeRepository.buildLocalDatabaseRecipes(cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount)
+                recipes = RecipeRepository.buildLocalDatabaseRecipes(
+                    cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount, currentSeed
+                )
             } finally {
                 isLoading = false
             }
@@ -1013,7 +1162,8 @@ fun RecipeAppScreen(
                 selectedCategory,
                 fridgeItems.toList(),
                 customUserRecipes.toList(),
-                committedLimitCount
+                committedLimitCount,
+                refreshSeed
             )
         }
     }
@@ -1046,7 +1196,7 @@ fun RecipeAppScreen(
                     fridgeItems.addAll(extractedIngs)
                     persistAll()
                 }
-                loadRecipes(selectedMode, newCuisine, newCategory, committedLimitCount, spokenText, collapseHeader = true)
+                loadRecipes(selectedMode, newCuisine, newCategory, committedLimitCount, spokenText, collapseHeader = true, forceNewBatch = true)
             }
         }
     }
@@ -1065,16 +1215,18 @@ fun RecipeAppScreen(
         }
     }
 
-    // Мгновенная фильтрация и сортировка на лету
+    // Мгновенная фильтрация и сортировка с сохранением новизны партии (FRESH_BATCH)
     val displayedRecipes by remember(recipes, showOnlyFavorites, favoriteRecipes.size, searchQuery, selectedSort, fridgeItems.size) {
         derivedStateOf {
             val currentFridge = fridgeItems.toList()
             val base = if (showOnlyFavorites) favoriteRecipes.toList() else recipes
             val searched = if (searchQuery.isBlank()) base else base.filter {
                 it.title.contains(searchQuery.trim(), ignoreCase = true) ||
+                it.cuisine.contains(searchQuery.trim(), ignoreCase = true) ||
                 it.ingredients.any { ing -> ing.contains(searchQuery.trim(), ignoreCase = true) }
             }
             when (selectedSort) {
+                SortOrder.FRESH_BATCH -> searched
                 SortOrder.FRIDGE_MATCH -> searched.sortedWith(
                     compareByDescending<Recipe> { it.isCustom }
                         .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientInFridge(it, currentFridge) } }
@@ -1189,24 +1341,46 @@ fun RecipeAppScreen(
                 if (!isFiltersExpanded && !showOnlyFavorites) {
                     Surface(
                         color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(vertical = 4.dp)
                             .clickable { isFiltersExpanded = true }
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "🔍 ${selectedMode.label} • $selectedCuisine • $selectedCategory (${displayedRecipes.size} блюд)",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                            Text("Фильтры ▼", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${selectedMode.label} • $selectedCuisine • $selectedCategory",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                                Text(
+                                    text = "Найдено: ${displayedRecipes.size} блюд (нажми для фильтров ▼)",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                                )
+                            }
+                            FilledTonalButton(
+                                onClick = {
+                                    loadRecipes(
+                                        targetCount = committedLimitCount,
+                                        collapseHeader = true,
+                                        forceNewBatch = true
+                                    )
+                                },
+                                enabled = !isLoading,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.height(34.dp)
+                            ) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Новые блюда", modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Новые", fontSize = 12.sp)
+                            }
                         }
                     }
                 } else if (!showOnlyFavorites) {
@@ -1221,7 +1395,7 @@ fun RecipeAppScreen(
                                     selected = selectedMode == mode,
                                     onClick = {
                                         selectedMode = mode
-                                        loadRecipes(mode, selectedCuisine, selectedCategory)
+                                        loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true)
                                     },
                                     label = { Text(mode.label, fontSize = 12.sp) }
                                 )
@@ -1256,7 +1430,7 @@ fun RecipeAppScreen(
                                                 fridgeItems.clear()
                                                 lastVoiceCommand = null
                                                 persistAll()
-                                                loadRecipes()
+                                                loadRecipes(forceNewBatch = true)
                                             }
                                         )
                                     }
@@ -1345,9 +1519,14 @@ fun RecipeAppScreen(
                                     selected = selectedCuisine == cuisine,
                                     onClick = {
                                         selectedCuisine = cuisine
-                                        loadRecipes(selectedMode, cuisine, selectedCategory)
+                                        loadRecipes(selectedMode, cuisine, selectedCategory, forceNewBatch = true)
                                     },
-                                    label = { Text(cuisine, fontSize = 12.sp) }
+                                    label = {
+                                        Text(
+                                            if (cuisine == "Все") "🌍 Все" else CulinaryUtils.formatCuisineWithFlag(cuisine),
+                                            fontSize = 12.sp
+                                        )
+                                    }
                                 )
                             }
                         }
@@ -1359,7 +1538,7 @@ fun RecipeAppScreen(
                                     selected = selectedCategory == category,
                                     onClick = {
                                         selectedCategory = category
-                                        loadRecipes(selectedMode, selectedCuisine, category)
+                                        loadRecipes(selectedMode, selectedCuisine, category, forceNewBatch = true)
                                     },
                                     label = { Text(category, fontSize = 12.sp) }
                                 )
@@ -1381,7 +1560,7 @@ fun RecipeAppScreen(
                                         if (newLimit != committedLimitCount) {
                                             committedLimitCount = newLimit
                                             if (selectedMode != DataSourceMode.LOCAL) {
-                                                loadRecipes(targetCount = newLimit)
+                                                loadRecipes(targetCount = newLimit, forceNewBatch = false)
                                             }
                                         }
                                     },
@@ -1393,11 +1572,15 @@ fun RecipeAppScreen(
                             Button(
                                 onClick = {
                                     committedLimitCount = sliderPosition.roundToInt()
-                                    loadRecipes(targetCount = committedLimitCount, collapseHeader = true)
+                                    loadRecipes(
+                                        targetCount = committedLimitCount,
+                                        collapseHeader = true,
+                                        forceNewBatch = true
+                                    )
                                 },
                                 enabled = !isLoading
                             ) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Подобрать", modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Refresh, contentDescription = "Подобрать новые", modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text("Подобрать")
                             }
@@ -1405,11 +1588,11 @@ fun RecipeAppScreen(
                     }
                 }
 
-                // Поиск + Чипы быстрой сортировки
+                // Поиск + Сортировка
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
-                    placeholder = { Text("Быстрый поиск по названию или ингредиенту...", fontSize = 13.sp) },
+                    placeholder = { Text("Поиск по названию, кухне или продукту...", fontSize = 13.sp) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = "Поиск", modifier = Modifier.size(18.dp)) },
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
@@ -1427,9 +1610,6 @@ fun RecipeAppScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
                 ) {
-                    item {
-                        Text("Сортировка:", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
                     items(SortOrder.entries) { sortOption ->
                         FilterChip(
                             selected = selectedSort == sortOption,
@@ -1459,9 +1639,9 @@ fun RecipeAppScreen(
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
                                 when (selectedMode) {
-                                    DataSourceMode.FREE_AI -> "✨ ИИ составляет рецепты на русском языке..."
-                                    DataSourceMode.MEAL_DB_API -> "⚡ Быстрая параллельная загрузка и перевод..."
-                                    DataSourceMode.LOCAL -> "Открываем рецепты..."
+                                    DataSourceMode.FREE_AI -> "✨ ИИ придумывает новые блюда (партия #${refreshSeed + 1})..."
+                                    DataSourceMode.MEAL_DB_API -> "🌍 Ищем новые блюда в мировой базе и переводим..."
+                                    DataSourceMode.LOCAL -> "Обновляем подборку рецептов..."
                                 }
                             )
                         }
@@ -1536,6 +1716,26 @@ fun RecipeAppScreen(
                                 } else null
                             )
                         }
+
+                        // Кнопка в самом низу списка для удобной подгрузки следующей партии блюд
+                        if (!showOnlyFavorites) {
+                            item {
+                                OutlinedButton(
+                                    onClick = {
+                                        loadRecipes(
+                                            targetCount = committedLimitCount,
+                                            collapseHeader = true,
+                                            forceNewBatch = true
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = "Ещё")
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("🔄 Подобрать другие блюда по этим фильтрам")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1602,7 +1802,7 @@ fun AddCustomRecipeView(
                 FilterChip(
                     selected = selectedCuisine == c,
                     onClick = { selectedCuisine = c },
-                    label = { Text(c, fontSize = 12.sp) }
+                    label = { Text(CulinaryUtils.formatCuisineWithFlag(c), fontSize = 12.sp) }
                 )
             }
         }
@@ -1893,7 +2093,7 @@ fun ShoppingListView(
 }
 
 // =========================================================================
-// 9. КАРТОЧКА РЕЦЕПТА С ПРОГРЕССОМ ГОТОВКИ И БЫСТРЫМ КЭШЕМ ФОТО
+// 9. КАРТОЧКА РЕЦЕПТА С ПРОГРЕССОМ ШАГОВ И РЕАЛЬНЫМИ ФЛАГАМИ СТРАН
 // =========================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1926,6 +2126,7 @@ fun RecipeCard(
             }
         }
     }
+    val completedSteps = remember(recipe.id) { mutableStateListOf<Int>() }
 
     val missingIngredients = scaledIngredients.filter { !checkedIngredients.contains(it) }
     val matchedCount = scaledIngredients.count { CulinaryUtils.isIngredientInFridge(it, fridgeItems) }
@@ -1948,7 +2149,7 @@ fun RecipeCard(
     val inFridgeColor = if (isDarkTheme) Color(0xFF81C784) else Color(0xFF2E7D32)
 
     Card(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
         modifier = Modifier.fillMaxWidth()
@@ -1990,6 +2191,68 @@ fun RecipeCard(
                 }
             }
 
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Красивые капсульные бейджи с реальной страной/кухней, категорией, временем и калориями
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = CulinaryUtils.formatCuisineWithFlag(recipe.cuisine),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "🍽 ${recipe.category}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "⏱ ${recipe.cookingTime}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+                item {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(
+                            text = "🔥 ${recipe.calories} ккал",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
             FilledTonalButton(
                 onClick = {
                     val fullSpeech = buildString {
@@ -2005,7 +2268,7 @@ fun RecipeCard(
                     }
                     onSpeakText(fullRecipeUtteranceId, fullSpeech)
                 },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
             ) {
                 Icon(
                     imageVector = if (isSpeakingFullRecipe) Icons.Default.Stop else Icons.Default.VolumeUp,
@@ -2034,14 +2297,7 @@ fun RecipeCard(
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("⏱ ${recipe.cookingTime}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("🌍 ${recipe.cuisine}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("🍽 ${recipe.category}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("🔥 ${recipe.calories} ккал", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             val safeImages = recipe.imageUrls.ifEmpty {
                 listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg")
@@ -2175,42 +2431,71 @@ fun RecipeCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            Text(
-                text = "Способ приготовления (нажми на шаг для озвучки 🔈):",
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Пошаговое приготовление:",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp
+                )
+                if (completedSteps.isNotEmpty()) {
+                    Text(
+                        text = "Готово: ${completedSteps.size}/${safeInstructions.size}",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
             Spacer(modifier = Modifier.height(4.dp))
 
             safeInstructions.forEachIndexed { stepIndex, step ->
                 val stepUtteranceId = "step_${recipe.id}_$stepIndex"
                 val isStepSpeaking = currentlySpeakingId == stepUtteranceId
+                val isStepDone = completedSteps.contains(stepIndex)
                 val timerInfo = remember(step) { CulinaryUtils.extractTimerInfo(step) }
 
                 Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
                     Surface(
-                        color = if (isStepSpeaking) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                        color = when {
+                            isStepSpeaking -> MaterialTheme.colorScheme.primaryContainer
+                            isStepDone -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            else -> Color.Transparent
+                        },
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onSpeakText(stepUtteranceId, "Шаг ${stepIndex + 1}. $step") }
+                            .clickable {
+                                if (isStepDone) completedSteps.remove(stepIndex)
+                                else completedSteps.add(stepIndex)
+                            }
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                         ) {
                             Text(
-                                text = "${stepIndex + 1}. $step",
+                                text = if (isStepDone) "✓ ${stepIndex + 1}. $step" else "${stepIndex + 1}. $step",
                                 fontSize = 14.sp,
                                 fontWeight = if (isStepSpeaking) FontWeight.SemiBold else FontWeight.Normal,
+                                textDecoration = if (isStepDone) TextDecoration.LineThrough else TextDecoration.None,
+                                color = if (isStepDone) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                                 modifier = Modifier.weight(1f)
                             )
-                            Icon(
-                                imageVector = if (isStepSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
-                                contentDescription = "Озвучить шаг",
-                                tint = if (isStepSpeaking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp).padding(start = 4.dp)
-                            )
+                            IconButton(
+                                onClick = { onSpeakText(stepUtteranceId, "Шаг ${stepIndex + 1}. $step") },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isStepSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
+                                    contentDescription = "Озвучить шаг",
+                                    tint = if (isStepSpeaking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
 
@@ -2326,12 +2611,17 @@ fun StepTimerWidget(
 }
 
 // =========================================================================
-// 10. ВЫСОКОСКОРОСТНОЙ РЕПОЗИТОРИЙ С ОПЕРАТИВНЫМ КЭШЕМ И ПАРАЛЛЕЛЬНОЙ СЕТЬЮ
+// 10. УМНЫЙ РЕПОЗИТОРИЙ С РОТАЦИЕЙ НОВЫХ БЛЮД И ОПРЕДЕЛЕНИЕМ РЕАЛЬНОЙ КУХНИ
 // =========================================================================
 object RecipeRepository {
     private val translationSemaphore = Semaphore(4)
     private val translationCache = ConcurrentHashMap<String, String>()
     private val mealDbDetailCache = ConcurrentHashMap<String, Recipe>()
+
+    // Трекеры просмотренных блюд, чтобы каждое нажатие "Подобрать" выдавало НОВЫЕ блюда!
+    private val recentlyShownMealDbIds = Collections.synchronizedSet( LinkedHashSet<String>() )
+    private val recentlyShownAiTitles = Collections.synchronizedSet( LinkedHashSet<String>() )
+    private val searchLetters = listOf('b', 'c', 's', 'p', 'm', 't', 'f', 'g', 'r', 'l', 'k', 'a', 'd', 'h', 'n', 'w')
 
     private fun httpGet(urlStr: String, timeoutMs: Int = 6000): String {
         val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
@@ -2438,33 +2728,48 @@ object RecipeRepository {
         return CulinaryUtils.ensureValidInstructions(rawList, title, ingredients)
     }
 
+    // ИИ-ГЕНЕРАТОР С ЗАПРЕТОМ ПОВТОРОВ И РЕАЛЬНОЙ КУХНЕЙ КАЖДОГО БЛЮДА
     suspend fun fetchAiRussianRecipes(
         cuisine: String,
         category: String,
         fridgeItems: List<String>,
         customRecipes: List<Recipe>,
         voicePrompt: String?,
-        count: Int
+        count: Int,
+        refreshSeed: Int
     ): List<Recipe> = withContext(Dispatchers.IO) {
         try {
             val fridgeText = if (fridgeItems.isNotEmpty()) "Обязательно используй продукты: ${fridgeItems.joinToString(", ")}." else ""
             val voiceText = if (!voicePrompt.isNullOrBlank()) "Запрос: $voicePrompt." else ""
+            val excludeText = if (recentlyShownAiTitles.isNotEmpty()) {
+                "НЕ ПОВТОРЯЙ эти ранее показанные блюда: ${recentlyShownAiTitles.takeLast(12).joinToString(", ")}. Придумай СОВЕРШЕННО НОВЫЕ блюда!"
+            } else ""
+
+            val culinaryStyles = listOf(
+                "традиционные и аутентичные блюда",
+                "популярные ресторанные хиты и стрит-фуд",
+                "ароматные домашние блюда с насыщенным вкусом",
+                "необычные и оригинальные рецепты шеф-поваров"
+            )
+            val styleHint = culinaryStyles[refreshSeed % culinaryStyles.size]
             val askCount = minOf(count, 6)
 
             val userPrompt = """
-                Создай $askCount разных рецептов строго на русском языке (без единого английского слова в title, ingredients и instructions).
-                Кухня: ${if (cuisine == "Все") "разные кухни мира" else cuisine}.
-                Категория: ${if (category == "Все") "любая" else category}.
-                $fridgeText $voiceText
-                У каждого блюда должно быть минимум 3 подробных шага в массиве instructions с временем в минутах, и поле englishName (название на английском только для генерации фото).
+                Партия №${refreshSeed + 1} (акцент: $styleHint).
+                Создай $askCount новых разных рецептов строго на русском языке.
+                Кухня: ${if (cuisine == "Все") "разные страны мира (укажи реальную кухню для каждого блюда: Русская, Корейская, Итальянская, Японская, Французская, Грузинская, Мексиканская, Китайская, Тайская и т.д.)" else cuisine}.
+                Категория: ${if (category == "Все") "разные категории (Супы, Вторые блюда, Салаты, Выпечка, Что-то к чаю)" else category}.
+                $fridgeText $voiceText $excludeText
+                У каждого блюда должно быть минимум 3 подробных шага в массиве instructions с временем в минутах, и поле englishName (название на английском для фото).
                 Верни ТОЛЬКО валидный JSON массив:
-                [{"title":"Название на русском","englishName":"dish name","cuisine":"Кухня","category":"Категория","cookingTime":"35 мин","difficulty":"Легко","calories":250,"ingredients":["Продукт - 200 г"],"instructions":["Шаг 1. Подготовьте продукты.","Шаг 2. Обжарьте 10 минут.","Шаг 3. Варите 15 минут."]}]
+                [{"title":"Название на русском","englishName":"dish name","cuisine":"Точная кухня (например Корейская)","category":"Точная категория","cookingTime":"35 мин","difficulty":"Легко","calories":250,"ingredients":["Продукт - 200 г"],"instructions":["Шаг 1. Подготовьте продукты.","Шаг 2. Обжарьте 10 минут.","Шаг 3. Варите 15 минут."]}]
             """.trimIndent()
 
             val payload = JSONObject().apply {
                 put("model", "openai")
+                put("seed", Random.nextInt(1, 999999))
                 put("messages", JSONArray().apply {
-                    put(JSONObject().put("role", "system").put("content", "Отвечай строго валидным JSON массивом рецептов исключительно на русском языке."))
+                    put(JSONObject().put("role", "system").put("content", "Отвечай строго валидным JSON массивом новых рецептов исключительно на русском языке."))
                     put(JSONObject().put("role", "user").put("content", userPrompt))
                 })
             }
@@ -2494,11 +2799,13 @@ object RecipeRepository {
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
                     val ruTitle = translateEnToRu(obj.optString("title", "Авторское блюдо #${i + 1}"))
+                    recentlyShownAiTitles.add(ruTitle)
+
                     val engDish = obj.optString("englishName", ruTitle)
                     val encodedPhoto = URLEncoder.encode(engDish, "UTF-8").replace("+", "%20")
 
-                    val img1 = "https://image.pollinations.ai/prompt/$encodedPhoto%20appetizing%20dish%20food%20photography?width=600&height=400&nologo=true&seed=${i + 101}"
-                    val img2 = "https://image.pollinations.ai/prompt/$encodedPhoto%20restaurant%20serving%20closeup?width=600&height=400&nologo=true&seed=${i + 202}"
+                    val img1 = "https://image.pollinations.ai/prompt/$encodedPhoto%20appetizing%20dish%20food%20photography?width=600&height=400&nologo=true&seed=${refreshSeed * 100 + i + 11}"
+                    val img2 = "https://image.pollinations.ai/prompt/$encodedPhoto%20restaurant%20serving%20closeup?width=600&height=400&nologo=true&seed=${refreshSeed * 100 + i + 77}"
 
                     val ingArr = obj.optJSONArray("ingredients") ?: JSONArray()
                     val ingList = List(ingArr.length()) { translateEnToRu(ingArr.getString(it)) }
@@ -2507,12 +2814,23 @@ object RecipeRepository {
                     val stepsList = extractStepsFromJsonObject(obj, ruTitle, ingList)
                         .map { translateEnToRu(it) }
 
+                    val realCuisine = CulinaryUtils.resolveRealCuisine(
+                        obj.optString("cuisine", ""),
+                        ruTitle,
+                        cuisine
+                    )
+                    val realCategory = CulinaryUtils.resolveRealCategory(
+                        obj.optString("category", ""),
+                        ruTitle,
+                        category
+                    )
+
                     aiResult.add(
                         Recipe(
-                            id = "ai_${ruTitle.hashCode()}_$i",
+                            id = "ai_${refreshSeed}_${ruTitle.hashCode()}_$i",
                             title = ruTitle,
-                            cuisine = if (cuisine == "Все") translateEnToRu(obj.optString("cuisine", "Мировая")) else cuisine,
-                            category = if (category == "Все") translateEnToRu(obj.optString("category", "Основное")) else category,
+                            cuisine = realCuisine,
+                            category = realCategory,
                             cookingTime = CulinaryUtils.normalizeAndTranslateCulinary(obj.optString("cookingTime", "35 мин")),
                             difficulty = translateEnToRu(obj.optString("difficulty", "Средне")),
                             calories = obj.optInt("calories", 250),
@@ -2525,7 +2843,7 @@ object RecipeRepository {
                 if (aiResult.isNotEmpty()) {
                     if (aiResult.size < count) {
                         val existingTitles = aiResult.map { it.title }.toSet()
-                        val extra = buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count)
+                        val extra = buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
                             .filter { !existingTitles.contains(it.title) }
                         aiResult.addAll(extra)
                     }
@@ -2534,16 +2852,17 @@ object RecipeRepository {
             }
         } catch (_: Exception) {}
 
-        return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count)
+        return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
-    // БЫСТРАЯ ПАРАЛЛЕЛЬНАЯ ЗАГРУЗКА МИРОВОЙ БАЗЫ С ОПЕРАТИВНЫМ КЭШЕМ (async + awaitAll)
+    // МИРОВАЯ БАЗА TheMealDB: КАЖДЫЙ РАЗ НОВЫЕ БЛЮДА + ОТОБРАЖЕНИЕ РЕАЛЬНОЙ КУХНИ (strArea)
     suspend fun fetchTranslatedMealDbRecipes(
         cuisine: String,
         category: String,
         fridgeItems: List<String>,
         customRecipes: List<Recipe>,
-        count: Int
+        count: Int,
+        refreshSeed: Int
     ): List<Recipe> = withContext(Dispatchers.IO) {
         try {
             val ingredientRuToEn = mapOf(
@@ -2553,47 +2872,75 @@ object RecipeRepository {
             )
             val areaMap = mapOf(
                 "Русская" to "Russian", "Французская" to "French", "Итальянская" to "Italian",
-                "Японская" to "Japanese", "Мексиканская" to "Mexican"
+                "Японская" to "Japanese", "Мексиканская" to "Mexican", "Китайская" to "Chinese",
+                "Тайская" to "Thai", "Индийская" to "Indian"
             )
             val categoryMap = mapOf(
-                "Супы" to "Starter", "Каши и завтраки" to "Breakfast", "Вторые блюда" to "Chicken",
+                "Супы" to "Starter", "Каши и завтраки" to "Breakfast", "Вторые блюда" to "Beef",
                 "Выпечка" to "Dessert", "Что-то к чаю" to "Dessert", "Салаты" to "Side", "Паста и пицца" to "Pasta"
             )
 
             val firstFridgeEn = fridgeItems.firstNotNullOfOrNull { ingredientRuToEn[it.trim().lowercase()] }
 
+            // При фильтрах (Все, Все) меняем поисковую букву при каждом нажатии "Подобрать", чтобы открывать сотни разных блюд!
+            val rotatedLetter = searchLetters[refreshSeed % searchLetters.size]
+            val secondCategoryForVariety = listOf("Chicken", "Beef", "Seafood", "Pork", "Pasta")[refreshSeed % 5]
+
             val endpointUrl = when {
                 firstFridgeEn != null -> "https://www.themealdb.com/api/json/v1/1/filter.php?i=$firstFridgeEn"
                 cuisine != "Все" && areaMap.containsKey(cuisine) -> "https://www.themealdb.com/api/json/v1/1/filter.php?a=${areaMap[cuisine]}"
+                category != "Все" && category == "Вторые блюда" -> "https://www.themealdb.com/api/json/v1/1/filter.php?c=$secondCategoryForVariety"
                 category != "Все" && categoryMap.containsKey(category) -> "https://www.themealdb.com/api/json/v1/1/filter.php?c=${categoryMap[category]}"
-                else -> "https://www.themealdb.com/api/json/v1/1/search.php?s="
+                else -> "https://www.themealdb.com/api/json/v1/1/search.php?s=$rotatedLetter"
             }
 
             val listResponse = httpGet(endpointUrl, 6000)
             val mealsArray = JSONObject(listResponse).optJSONArray("meals")
 
             if (mealsArray != null && mealsArray.length() > 0) {
-                val fetchLimit = minOf(count, minOf(mealsArray.length(), 8))
+                val allCandidateObjects = List(mealsArray.length()) { mealsArray.getJSONObject(it) }
+
+                // Разделяем кандидатов на "еще НЕ показанные" и "уже показанные ранее" и перемешиваем!
+                val unseenCandidates = allCandidateObjects
+                    .filter { !recentlyShownMealDbIds.contains(it.optString("idMeal")) }
+                    .shuffled()
+                val seenCandidates = allCandidateObjects
+                    .filter { recentlyShownMealDbIds.contains(it.optString("idMeal")) }
+                    .shuffled()
+
+                // Если все блюда в этой узкой категории уже были показаны — сбрасываем историю для нового круга
+                val prioritizedCandidates = if (unseenCandidates.isNotEmpty()) {
+                    unseenCandidates + seenCandidates
+                } else {
+                    recentlyShownMealDbIds.clear()
+                    allCandidateObjects.shuffled()
+                }
+
+                val fetchLimit = minOf(count, minOf(prioritizedCandidates.size, 8))
+                val selectedBatch = prioritizedCandidates.take(fetchLimit)
 
                 val parallelResults = coroutineScope {
-                    (0 until fetchLimit).map { i ->
+                    selectedBatch.mapIndexed { i, mealSummary ->
                         async {
                             try {
-                                val mealSummary = mealsArray.getJSONObject(i)
                                 val mealId = mealSummary.getString("idMeal")
+                                recentlyShownMealDbIds.add(mealId)
 
-                                // Если рецепт уже есть в оперативном кэше — отдаем за 0 мс!
                                 mealDbDetailCache[mealId]?.let { cached ->
-                                    return@async cached.copy(
-                                        cuisine = if (cuisine != "Все") cuisine else cached.cuisine,
-                                        category = if (category != "Все") category else cached.category
-                                    )
+                                    return@async cached
                                 }
 
-                                val detailResponse = httpGet("https://www.themealdb.com/api/json/v1/1/lookup.php?i=$mealId", 6000)
-                                val detailObj = JSONObject(detailResponse).getJSONArray("meals").getJSONObject(0)
+                                // Если search.php уже вернул полные детали (есть strInstructions и strArea) — не тратим время на второй запрос!
+                                val detailObj = if (mealSummary.has("strInstructions") && mealSummary.has("strArea")) {
+                                    mealSummary
+                                } else {
+                                    val detailResponse = httpGet("https://www.themealdb.com/api/json/v1/1/lookup.php?i=$mealId", 6000)
+                                    JSONObject(detailResponse).getJSONArray("meals").getJSONObject(0)
+                                }
 
                                 val enTitle = detailObj.optString("strMeal", "Dish")
+                                val enArea = detailObj.optString("strArea", "")
+                                val enCategory = detailObj.optString("strCategory", "")
                                 val enInstructions = detailObj.optString("strInstructions", "")
 
                                 val rawIngredients = mutableListOf<String>()
@@ -2631,6 +2978,10 @@ object RecipeRepository {
                                 val ruStepsRaw = translatedLines.drop(1 + ingCount)
                                 val finalSteps = CulinaryUtils.ensureValidInstructions(ruStepsRaw, ruTitle, ruIngredients)
 
+                                // ИСПРАВЛЕНО: Определяем РЕАЛЬНУЮ кухню и категорию каждого блюда из API!
+                                val realRussianCuisine = CulinaryUtils.resolveRealCuisine(enArea, ruTitle, cuisine)
+                                val realRussianCategory = CulinaryUtils.resolveRealCategory(enCategory, ruTitle, category)
+
                                 val mainPhoto = detailObj.optString("strMealThumb", "")
                                 val encodedIng = URLEncoder.encode(firstIngNameEn, "UTF-8").replace("+", "%20")
                                 val ingPhoto = "https://www.themealdb.com/images/ingredients/$encodedIng.png"
@@ -2638,8 +2989,8 @@ object RecipeRepository {
                                 val builtRecipe = Recipe(
                                     id = "mealdb_$mealId",
                                     title = ruTitle,
-                                    cuisine = if (cuisine != "Все") cuisine else "Мировая",
-                                    category = if (category != "Все") category else "Основное",
+                                    cuisine = realRussianCuisine,
+                                    category = realRussianCategory,
                                     cookingTime = "${25 + (i * 5) % 35} мин",
                                     difficulty = "Средне",
                                     calories = 220 + (i * 25) % 180,
@@ -2658,7 +3009,9 @@ object RecipeRepository {
 
                 if (parallelResults.isNotEmpty()) {
                     if (parallelResults.size < count) {
-                        val extra = buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count)
+                        val existingIds = parallelResults.map { it.id }.toSet()
+                        val extra = buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
+                            .filter { !existingIds.contains(it.id) }
                         parallelResults.addAll(extra)
                     }
                     return@withContext parallelResults.take(count)
@@ -2666,39 +3019,54 @@ object RecipeRepository {
             }
         } catch (_: Exception) {}
 
-        return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count)
+        return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
+    // ЛОКАЛЬНАЯ БАЗА С АКТИВНОЙ РОТАЦИЕЙ НОВЫХ БЛЮД ПРИ ПОВТОРНОМ НАЖАТИИ "ПОДОБРАТЬ"
     fun buildLocalDatabaseRecipes(
         cuisine: String,
         category: String,
         fridgeItems: List<String>,
         customRecipes: List<Recipe>,
-        count: Int
+        count: Int,
+        refreshSeed: Int
     ): List<Recipe> {
-        val allRecipes = customRecipes + CURATED_LOCAL_RECIPES
+        val randomForBatch = Random(refreshSeed * 31 + 7)
+        val shuffledPool = CURATED_LOCAL_RECIPES.shuffled(randomForBatch)
+        val allRecipes = customRecipes + shuffledPool
 
         val exactMatches = allRecipes.filter { r ->
             (cuisine == "Все" || r.cuisine.equals(cuisine, ignoreCase = true)) &&
             (category == "Все" || r.category.equals(category, ignoreCase = true))
-        }.sortedWith(
-            compareByDescending<Recipe> { it.isCustom }
-                .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientInFridge(it, fridgeItems) } }
-        ).toMutableList()
+        }.toMutableList()
+
+        // Смещаем стартовую позицию на величину refreshSeed, чтобы каждый клик "Подобрать" менял состав выдачи!
+        if (exactMatches.size > 1 && refreshSeed > 0) {
+            Collections.rotate(exactMatches, -(refreshSeed * 3))
+        }
+
+        // Если указаны продукты в холодильнике — поднимаем блюда с совпадениями наверх, сохраняя свежее перемешивание
+        if (fridgeItems.isNotEmpty()) {
+            exactMatches.sortWith(
+                compareByDescending<Recipe> { it.isCustom }
+                    .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientInFridge(it, fridgeItems) } }
+            )
+        }
 
         if (exactMatches.size < count) {
             val usedIds = exactMatches.map { it.id }.toMutableSet()
             val sameCategoryOrCuisine = allRecipes.filter { r ->
                 !usedIds.contains(r.id) &&
                 (r.category.equals(category, ignoreCase = true) || r.cuisine.equals(cuisine, ignoreCase = true))
-            }
+            }.shuffled(randomForBatch)
+
             for (r in sameCategoryOrCuisine) {
                 if (exactMatches.size < count) {
                     exactMatches.add(r)
                     usedIds.add(r.id)
                 }
             }
-            for (r in allRecipes) {
+            for (r in allRecipes.shuffled(randomForBatch)) {
                 if (!usedIds.contains(r.id) && exactMatches.size < count) {
                     exactMatches.add(r)
                     usedIds.add(r.id)
@@ -3132,6 +3500,44 @@ object RecipeRepository {
                 "Мелко нарежьте куриное филе и обжарьте на сковороде с кубиками томатов и кукурузой в течение 8 минут.",
                 "На половину каждой лепешки выложите слой тертого сыра, горячую куриную начинку и еще немного сыра, сложите пополам.",
                 "Обжарьте сложенные кесадильи на сухой сковороде по 3 минуты с каждой стороны до хрустящей корочки и расплавления сыра."
+            )
+        ),
+        Recipe(
+            id = "loc_tomyum",
+            title = "Тайский суп Том Ям с креветками, грибами и кокосовым молоком",
+            cuisine = "Тайская",
+            category = "Супы",
+            cookingTime = "25 мин",
+            difficulty = "Средне",
+            calories = 175,
+            imageUrls = listOf(
+                "https://www.themealdb.com/images/media/meals/1529445434.jpg",
+                "https://www.themealdb.com/images/ingredients/King%20Prawns.png"
+            ),
+            ingredients = listOf("Креветки или курица - 300 г", "Грибы шампиньоны - 150 г", "Кокосовое молоко или сливки - 200 мл", "Томаты черри - 100 г", "Лимон или лайм - 1 шт."),
+            instructions = listOf(
+                "Доведите 500 мл бульона до кипения, добавьте нарезанные грибы и варите 7 минут.",
+                "Добавьте очищенные креветки, половинки томатов черри и влейте кокосовое молоко, варите еще 5 минут.",
+                "Приправьте соком лайма и подавайте горячим с отварным рисом."
+            )
+        ),
+        Recipe(
+            id = "loc_tikka",
+            title = "Индийская Курица Тикка Масала в пряном томатно-сливочном соусе",
+            cuisine = "Индийская",
+            category = "Вторые блюда",
+            cookingTime = "35 мин",
+            difficulty = "Легко",
+            calories = 260,
+            imageUrls = listOf(
+                "https://www.themealdb.com/images/media/meals/wyxwsp1486979827.jpg",
+                "https://www.themealdb.com/images/ingredients/Chicken.png"
+            ),
+            ingredients = listOf("Курица (филе) - 500 г", "Сливки или сметана - 200 мл", "Томатный соус - 4 ст.л.", "Чеснок - 3 зубчика", "Карри и паприка - 2 ч.л."),
+            instructions = listOf(
+                "Нарежьте куриное филе кубиками и обжарьте со специями карри и чесноком в течение 8 минут.",
+                "Добавьте томатный соус и теплые сливки, перемешайте и тушите на слабом огне 15 минут до густоты.",
+                "Подавайте ароматную курицу с рассыпчатым рисом или теплыми лепешками."
             )
         )
     )
