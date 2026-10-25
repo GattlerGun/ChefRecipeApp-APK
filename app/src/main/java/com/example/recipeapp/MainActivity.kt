@@ -215,7 +215,6 @@ object CulinaryUtils {
     val CATEGORIES = listOf("Все", "Супы", "Каши и завтраки", "Вторые блюда", "Выпечка", "Что-то к чаю", "Салаты", "Паста и пицца")
     val QUICK_FRIDGE = listOf("Курица", "Яйца", "Картофель", "Сыр", "Томаты", "Молоко", "Рис", "Фарш", "Творог", "Капуста", "Грибы")
 
-    // Полная карта стран происхождения из TheMealDB -> реальное название кухни на русском
     private val AREA_TO_RUSSIAN_CUISINE = mapOf(
         "russian" to "Русская",
         "korean" to "Корейская",
@@ -251,7 +250,6 @@ object CulinaryUtils {
         "australian" to "Австралийская"
     )
 
-    // Флаги для красивого отображения реальной кухни на карточке
     private val CUISINE_FLAGS = mapOf(
         "Русская" to "🇷🇺",
         "Корейская" to "🇰🇷",
@@ -285,19 +283,16 @@ object CulinaryUtils {
         "Домашняя" to "🏠"
     )
 
-    // Определение реальной кухни по данным API и ключевым словам в названии блюда
     fun resolveRealCuisine(rawArea: String?, dishTitle: String, selectedFilterCuisine: String): String {
         val cleanArea = rawArea?.trim()?.lowercase() ?: ""
         if (cleanArea.isNotEmpty() && cleanArea != "unknown") {
             AREA_TO_RUSSIAN_CUISINE[cleanArea]?.let { return it }
-            // Если ИИ уже вернул русское название кухни
             if (!hasLatin(cleanArea)) {
                 val cap = cleanArea.replaceFirstChar { it.uppercase() }
                 if (cap != "Все" && cap != "Любая" && cap != "Разные") return cap
             }
         }
 
-        // Распознавание по характерным словам в названии блюда, если поле страны спорное/пустое
         val lowerTitle = dishTitle.lowercase()
         when {
             lowerTitle.contains("кимчи") || lowerTitle.contains("корейск") || lowerTitle.contains("пибимпап") || lowerTitle.contains("токпокки") || lowerTitle.contains("яннём") -> return "Корейская"
@@ -316,7 +311,6 @@ object CulinaryUtils {
         return "Мировая"
     }
 
-    // Определение реальной категории блюда из TheMealDB
     fun resolveRealCategory(rawCategory: String?, dishTitle: String, selectedFilterCategory: String): String {
         if (selectedFilterCategory != "Все") return selectedFilterCategory
         val lowerTitle = dishTitle.lowercase()
@@ -1096,7 +1090,6 @@ fun RecipeAppScreen(
     var isLoading by remember { mutableStateOf(false) }
     var activeLoadJob by remember { mutableStateOf<Job?>(null) }
 
-    // При каждом вызове с forceNewBatch = true увеличивается refreshSeed и ищутся НОВЫЕ блюда!
     fun loadRecipes(
         modeToUse: DataSourceMode = selectedMode,
         cuisineToUse: String = selectedCuisine,
@@ -1215,7 +1208,6 @@ fun RecipeAppScreen(
         }
     }
 
-    // Мгновенная фильтрация и сортировка с сохранением новизны партии (FRESH_BATCH)
     val displayedRecipes by remember(recipes, showOnlyFavorites, favoriteRecipes.size, searchQuery, selectedSort, fridgeItems.size) {
         derivedStateOf {
             val currentFridge = fridgeItems.toList()
@@ -1717,7 +1709,6 @@ fun RecipeAppScreen(
                             )
                         }
 
-                        // Кнопка в самом низу списка для удобной подгрузки следующей партии блюд
                         if (!showOnlyFavorites) {
                             item {
                                 OutlinedButton(
@@ -2193,7 +2184,6 @@ fun RecipeCard(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Красивые капсульные бейджи с реальной страной/кухней, категорией, временем и калориями
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 item {
                     Surface(
@@ -2618,9 +2608,8 @@ object RecipeRepository {
     private val translationCache = ConcurrentHashMap<String, String>()
     private val mealDbDetailCache = ConcurrentHashMap<String, Recipe>()
 
-    // Трекеры просмотренных блюд, чтобы каждое нажатие "Подобрать" выдавало НОВЫЕ блюда!
-    private val recentlyShownMealDbIds = Collections.synchronizedSet( LinkedHashSet<String>() )
-    private val recentlyShownAiTitles = Collections.synchronizedSet( LinkedHashSet<String>() )
+    private val recentlyShownMealDbIds = Collections.synchronizedSet(LinkedHashSet<String>())
+    private val recentlyShownAiTitles = Collections.synchronizedSet(LinkedHashSet<String>())
     private val searchLetters = listOf('b', 'c', 's', 'p', 'm', 't', 'f', 'g', 'r', 'l', 'k', 'a', 'd', 'h', 'n', 'w')
 
     private fun httpGet(urlStr: String, timeoutMs: Int = 6000): String {
@@ -2728,7 +2717,6 @@ object RecipeRepository {
         return CulinaryUtils.ensureValidInstructions(rawList, title, ingredients)
     }
 
-    // ИИ-ГЕНЕРАТОР С ЗАПРЕТОМ ПОВТОРОВ И РЕАЛЬНОЙ КУХНЕЙ КАЖДОГО БЛЮДА
     suspend fun fetchAiRussianRecipes(
         cuisine: String,
         category: String,
@@ -2741,8 +2729,12 @@ object RecipeRepository {
         try {
             val fridgeText = if (fridgeItems.isNotEmpty()) "Обязательно используй продукты: ${fridgeItems.joinToString(", ")}." else ""
             val voiceText = if (!voicePrompt.isNullOrBlank()) "Запрос: $voicePrompt." else ""
-            val excludeText = if (recentlyShownAiTitles.isNotEmpty()) {
-                "НЕ ПОВТОРЯЙ эти ранее показанные блюда: ${recentlyShownAiTitles.takeLast(12).joinToString(", ")}. Придумай СОВЕРШЕННО НОВЫЕ блюда!"
+
+            val recentAiList = synchronized(recentlyShownAiTitles) {
+                recentlyShownAiTitles.toList().takeLast(12)
+            }
+            val excludeText = if (recentAiList.isNotEmpty()) {
+                "НЕ ПОВТОРЯЙ эти ранее показанные блюда: ${recentAiList.joinToString(", ")}. Придумай СОВЕРШЕННО НОВЫЕ блюда!"
             } else ""
 
             val culinaryStyles = listOf(
@@ -2855,7 +2847,6 @@ object RecipeRepository {
         return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
-    // МИРОВАЯ БАЗА TheMealDB: КАЖДЫЙ РАЗ НОВЫЕ БЛЮДА + ОТОБРАЖЕНИЕ РЕАЛЬНОЙ КУХНИ (strArea)
     suspend fun fetchTranslatedMealDbRecipes(
         cuisine: String,
         category: String,
@@ -2881,8 +2872,6 @@ object RecipeRepository {
             )
 
             val firstFridgeEn = fridgeItems.firstNotNullOfOrNull { ingredientRuToEn[it.trim().lowercase()] }
-
-            // При фильтрах (Все, Все) меняем поисковую букву при каждом нажатии "Подобрать", чтобы открывать сотни разных блюд!
             val rotatedLetter = searchLetters[refreshSeed % searchLetters.size]
             val secondCategoryForVariety = listOf("Chicken", "Beef", "Seafood", "Pork", "Pasta")[refreshSeed % 5]
 
@@ -2900,7 +2889,6 @@ object RecipeRepository {
             if (mealsArray != null && mealsArray.length() > 0) {
                 val allCandidateObjects = List(mealsArray.length()) { mealsArray.getJSONObject(it) }
 
-                // Разделяем кандидатов на "еще НЕ показанные" и "уже показанные ранее" и перемешиваем!
                 val unseenCandidates = allCandidateObjects
                     .filter { !recentlyShownMealDbIds.contains(it.optString("idMeal")) }
                     .shuffled()
@@ -2908,7 +2896,6 @@ object RecipeRepository {
                     .filter { recentlyShownMealDbIds.contains(it.optString("idMeal")) }
                     .shuffled()
 
-                // Если все блюда в этой узкой категории уже были показаны — сбрасываем историю для нового круга
                 val prioritizedCandidates = if (unseenCandidates.isNotEmpty()) {
                     unseenCandidates + seenCandidates
                 } else {
@@ -2930,7 +2917,6 @@ object RecipeRepository {
                                     return@async cached
                                 }
 
-                                // Если search.php уже вернул полные детали (есть strInstructions и strArea) — не тратим время на второй запрос!
                                 val detailObj = if (mealSummary.has("strInstructions") && mealSummary.has("strArea")) {
                                     mealSummary
                                 } else {
@@ -2978,7 +2964,6 @@ object RecipeRepository {
                                 val ruStepsRaw = translatedLines.drop(1 + ingCount)
                                 val finalSteps = CulinaryUtils.ensureValidInstructions(ruStepsRaw, ruTitle, ruIngredients)
 
-                                // ИСПРАВЛЕНО: Определяем РЕАЛЬНУЮ кухню и категорию каждого блюда из API!
                                 val realRussianCuisine = CulinaryUtils.resolveRealCuisine(enArea, ruTitle, cuisine)
                                 val realRussianCategory = CulinaryUtils.resolveRealCategory(enCategory, ruTitle, category)
 
@@ -3022,7 +3007,6 @@ object RecipeRepository {
         return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
-    // ЛОКАЛЬНАЯ БАЗА С АКТИВНОЙ РОТАЦИЕЙ НОВЫХ БЛЮД ПРИ ПОВТОРНОМ НАЖАТИИ "ПОДОБРАТЬ"
     fun buildLocalDatabaseRecipes(
         cuisine: String,
         category: String,
@@ -3040,12 +3024,13 @@ object RecipeRepository {
             (category == "Все" || r.category.equals(category, ignoreCase = true))
         }.toMutableList()
 
-        // Смещаем стартовую позицию на величину refreshSeed, чтобы каждый клик "Подобрать" менял состав выдачи!
         if (exactMatches.size > 1 && refreshSeed > 0) {
-            Collections.rotate(exactMatches, -(refreshSeed * 3))
+            val shift = (refreshSeed * 3) % exactMatches.size
+            val rotated = exactMatches.drop(shift) + exactMatches.take(shift)
+            exactMatches.clear()
+            exactMatches.addAll(rotated)
         }
 
-        // Если указаны продукты в холодильнике — поднимаем блюда с совпадениями наверх, сохраняя свежее перемешивание
         if (fridgeItems.isNotEmpty()) {
             exactMatches.sortWith(
                 compareByDescending<Recipe> { it.isCustom }
