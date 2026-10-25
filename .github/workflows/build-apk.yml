@@ -12,10 +12,10 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - name: Fast Git Checkout (No Node.js 20)
+      - name: Fast Git Checkout
         run: |
           git init
-          git remote add origin https://github.com/${{ github.repository }}.git
+          git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
           git fetch --depth 1 origin ${{ github.sha }}
           git checkout FETCH_HEAD
 
@@ -25,22 +25,22 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Build Debug APK with Native Gradle
+      - name: Install Gradle 8.7 and Build APK
         run: |
-          gradle assembleDebug --no-daemon --build-cache
+          curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o gradle.zip
+          unzip -q gradle.zip -d /tmp
+          /tmp/gradle-8.7/bin/gradle assembleDebug --no-daemon
 
-      - name: Publish Direct APK to GitHub Releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          cp app/build/outputs/apk/debug/app-debug.apk ChefRecipeApp.apk
-          gh release delete latest-apk --yes || true
-          git tag -f latest-apk
-          git push -f origin latest-apk
-          gh release create latest-apk ChefRecipeApp.apk --title "Шеф-Повар APK (Свежая сборка)" --notes "Прямое скачивание файла ChefRecipeApp.apk без ZIP-архива"
-
-      - name: Upload Artifact Backup
+      - name: Upload APK to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ChefRecipeApp-APK
           path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish Direct APK to Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk ChefRecipeApp.apk
+          gh release delete latest-apk --cleanup-tag --yes || true
+          gh release create latest-apk ChefRecipeApp.apk --target ${{ github.sha }} --title "Шеф-Повар APK (Свежая сборка)" --notes "Прямое скачивание файла ChefRecipeApp.apk" || true
