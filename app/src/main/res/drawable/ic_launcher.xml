@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Яркий кулинарный оранжево-терракотовый фон -->
+    <path
+        android:fillColor="#FF5722"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Декоративный внутренний круг -->
+    <path
+        android:fillColor="#E64A19"
+        android:pathData="M54,54m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0" />
+
+    <!-- Белый колпак Шеф-Повара -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,44 C31,44 26,39 26,32 C26,26 31,21 37,21 C39,15 46,11 54,11 C62,11 69,15 71,21 C77,21 82,26 82,32 C82,39 77,44 70,44 L70,52 L38,52 Z" />
+
+    <!-- Ободок колпака -->
+    <path
+        android:fillColor="#FFE0B2"
+        android:pathData="M38,54h32v5h-32z" />
+
+    <!-- Чаша кастрюли / супа -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M28,64 L80,64 L76,84 C75,90 69,94 62,94 L46,94 C39,94 33,90 32,84 Z" />
+
+    <!-- Ручки кастрюли -->
+    <path
+        android:fillColor="#FFE0B2"
+        android:pathData="M22,66h6v5h-6z M80,66h6v5h-6z" />
+
+    <!-- Узор пара / аромата -->
+    <path
+        android:fillColor="#FFCCBC"
+        android:pathData="M45,69h18v3h-18z M49,75h10v3h-10z" />
+</vector>
