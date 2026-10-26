@@ -100,8 +100,8 @@ import kotlin.random.Random
 
 private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
 private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
-private const val CURRENT_APP_VERSION = "v1.3 ⚡"
-private const val WHATS_NEW_TEXT = "• Встроена защита от сбоев при старте и автовосстановление\n• Добавлен блок «💡 Секрет Шефа» в карточки рецептов\n• Кнопка «🎲 Случайное блюдо» и защита экрана от затухания"
+private const val CURRENT_APP_VERSION = "v1.4 🔥"
+private const val WHATS_NEW_TEXT = "• Тестовое обновление v1.4 успешно установлено из приложения!\n• Добавлен индикатор сложности готовки (👨‍🍳 Легко / Средне) в карточках\n• Оптимизирована работа таймеров и кэша"
 
 private val LightCulinaryColorScheme = lightColorScheme(
     primary = Color(0xFFD84315), onPrimary = Color.White,
@@ -1923,6 +1923,11 @@ fun RecipeCard(
                 item {
                     Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
                         Text("🔥 ${recipe.calories} ккал", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+                    }
+                }
+                item {
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+                        Text("👨‍🍳 ${recipe.difficulty}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
                     }
                 }
             }
