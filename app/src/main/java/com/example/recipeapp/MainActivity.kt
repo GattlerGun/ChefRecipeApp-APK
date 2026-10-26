@@ -217,10 +217,11 @@ enum class SortOrder(val label: String) {
 enum class AppScreen { RECIPES, SHOPPING_LIST, ADD_RECIPE }
 
 // =========================================================================
-// МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С GITHUB RELEASES
+// МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С ВИДИМЫМ СИСТЕМНЫМ ОКНОМ УСТАНОВКИ ANDROID
 // =========================================================================
 object AppUpdateManager {
     var signatureConflictState by mutableStateOf(false)
+    var downloadedStatusText by mutableStateOf("")
 
     fun getInstalledUpdateTimestamp(context: Context): Long = try {
         context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
@@ -315,30 +316,36 @@ object AppUpdateManager {
             )
         }
 
-    private fun copyApkToPublicDownloads(context: Context, sourceFile: File) {
-        try {
-            val fileName = "ChefRecipeApp_latest.apk"
+    // Сохраняет APK в публичную папку Downloads и возвращает системный content:// URI для запуска видимого установщика Android!
+    private fun saveApkToMediaStoreDownloads(context: Context, sourceFile: File): Uri? {
+        return try {
+            val fileName = "ChefRecipeApp_update_${System.currentTimeMillis()}.apk"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val resolver = context.contentResolver
                 val values = ContentValues().apply {
                     put(MediaStore.Downloads.DISPLAY_NAME, fileName)
                     put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
                     put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.Downloads.IS_PENDING, 1)
                 }
                 val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                if (uri != null) resolver.openOutputStream(uri)?.use { out -> sourceFile.inputStream().use { it.copyTo(out) } }
-            } else {
-                @Suppress("DEPRECATION")
-                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!dir.exists()) dir.mkdirs()
-                sourceFile.copyTo(File(dir, fileName), overwrite = true)
-            }
-        } catch (_: Exception) {}
+                if (uri != null) {
+                    resolver.openOutputStream(uri)?.use { out ->
+                        sourceFile.inputStream().use { it.copyTo(out, 32 * 1024) }
+                    }
+                    values.clear()
+                    values.put(MediaStore.Downloads.IS_PENDING, 0)
+                    resolver.update(uri, values, null, null)
+                }
+                uri
+            } else null
+        } catch (_: Exception) { null }
     }
 
     suspend fun downloadAndInstallApk(context: Context, releaseInfo: GitHubReleaseInfo, onProgress: (Float) -> Unit): Result<Unit> =
         withContext(Dispatchers.IO) {
             try {
+                withContext(Dispatchers.Main) { downloadedStatusText = "Подключение к серверу GitHub..." }
                 var currentUrl = releaseInfo.downloadUrl
                 var redirects = 0
                 var conn: HttpURLConnection
@@ -361,6 +368,7 @@ object AppUpdateManager {
                     return@withContext Result.failure(Exception("APK еще не выгружен в Releases (код ${conn.responseCode})"))
                 }
                 val totalBytes = conn.contentLengthLong
+                val totalMb = if (totalBytes > 0) totalBytes / 1048576.0 else 15.2
                 val apkFile = File(context.externalCacheDir ?: context.cacheDir, "ChefRecipeApp_update.apk")
                 if (apkFile.exists()) apkFile.delete()
 
@@ -372,19 +380,33 @@ object AppUpdateManager {
                         while (input.read(buffer).also { read = it } != -1) {
                             output.write(buffer, 0, read)
                             downloaded += read
-                            if (totalBytes > 0) onProgress((downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f))
+                            val doneMb = downloaded / 1048576.0
+                            val fraction = if (totalBytes > 0) (downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f) else 0.5f
+                            onProgress(fraction)
+                            downloadedStatusText = String.format(Locale.US, "Скачано: %.1f из %.1f МБ (%d%%)", doneMb, totalMb, (fraction * 100).roundToInt())
                         }
                         output.flush()
                     }
                 }
                 conn.disconnect()
-                copyApkToPublicDownloads(context, apkFile)
-                withContext(Dispatchers.Main) { triggerPackageInstaller(context, apkFile) }
+
+                withContext(Dispatchers.Main) {
+                    downloadedStatusText = "Запуск системного установщика Android..."
+                }
+                val publicUri = saveApkToPublicDownloadsAndGetUri(context, apkFile)
+                withContext(Dispatchers.Main) {
+                    triggerVisibleSystemInstaller(context, apkFile, publicUri)
+                }
                 Result.success(Unit)
             } catch (e: Exception) { Result.failure(e) }
         }
 
-    fun triggerPackageInstaller(context: Context, apkFile: File) {
+    private fun saveApkToPublicDownloadsAndGetUri(context: Context, sourceFile: File): Uri? {
+        return saveApkToMediaStoreDownloads(context, sourceFile)
+    }
+
+    // Открывает ВИДИМОЕ системное диалоговое окно Android "Обновить это приложение?"
+    fun triggerVisibleSystemInstaller(context: Context, apkFile: File, mediaStoreUri: Uri?) {
         if (!apkFile.exists() || apkFile.length() == 0L) {
             Toast.makeText(context, "Файл обновления не найден", Toast.LENGTH_SHORT).show()
             return
@@ -394,6 +416,20 @@ object AppUpdateManager {
             context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return
         }
+
+        // Способ 1: Прямое открытие видимого системного окна установщика Android через MediaStore URI
+        if (mediaStoreUri != null) {
+            try {
+                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(mediaStoreUri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(viewIntent)
+                return
+            } catch (_: Exception) {}
+        }
+
+        // Способ 2 (Резервный): PackageInstaller Session
         var session: PackageInstaller.Session? = null
         try {
             val installer = context.packageManager.packageInstaller
@@ -1284,7 +1320,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
 
                     if (isDownloadingUpdate) {
                         Column {
-                            Text("Скачивание APK: ${(downloadProgress * 100).roundToInt()}%", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text(AppUpdateManager.downloadedStatusText.ifEmpty { "Скачивание APK: ${(downloadProgress * 100).roundToInt()}%" }), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(modifier = Modifier.height(4.dp))
                             LinearProgressIndicator(progress = { downloadProgress }, modifier = Modifier.fillMaxWidth())
                         }
