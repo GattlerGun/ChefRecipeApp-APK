@@ -24,6 +24,7 @@
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
         <activity
             android:name=".MainActivity"
             android:launchMode="singleTop"
@@ -33,6 +34,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Встроенный провайдер для открытия полного системного окна установки APK с прогресс-баром -->
+        <provider
+            android:name=".ApkFileProvider"
+            android:authorities="com.example.recipeapp.apkprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
     </application>
 
 </manifest>
