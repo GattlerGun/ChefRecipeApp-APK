@@ -100,8 +100,8 @@ import kotlin.random.Random
 
 private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
 private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
-private const val CURRENT_APP_VERSION = "v1.4 🔥"
-private const val WHATS_NEW_TEXT = "• Тестовое обновление v1.4 с видимым системным окном установки Android!\n• Показ скачанных мегабайт в реальном времени\n• Индикатор сложности готовки в карточках рецептов"
+private const val CURRENT_APP_VERSION = "v1.5 🚀"
+private const val WHATS_NEW_TEXT = "• Тестовое обновление v1.5 успешно установлено поверх v1.4!\n• Проверка работы единого ключа подписи (fixed-debug.keystore)\n• Прямой запуск системного установщика Android"
 
 private val LightCulinaryColorScheme = lightColorScheme(
     primary = Color(0xFFD84315), onPrimary = Color.White,
