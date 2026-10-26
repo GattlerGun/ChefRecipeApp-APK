@@ -101,7 +101,7 @@ import kotlin.random.Random
 private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
 private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
 private const val CURRENT_APP_VERSION = "v1.4 🔥"
-private const val WHATS_NEW_TEXT = "• Тестовое обновление v1.4 успешно установлено из приложения!\n• Добавлен индикатор сложности готовки (👨‍🍳 Легко / Средне) в карточках\n• Оптимизирована работа таймеров и кэша"
+private const val WHATS_NEW_TEXT = "• Тестовое обновление v1.4 с видимым системным окном установки Android!\n• Показ скачанных мегабайт в реальном времени\n• Индикатор сложности готовки в карточках рецептов"
 
 private val LightCulinaryColorScheme = lightColorScheme(
     primary = Color(0xFFD84315), onPrimary = Color.White,
@@ -316,10 +316,9 @@ object AppUpdateManager {
             )
         }
 
-    // Сохраняет APK в публичную папку Downloads и возвращает системный content:// URI для запуска видимого установщика Android!
     private fun saveApkToMediaStoreDownloads(context: Context, sourceFile: File): Uri? {
         return try {
-            val fileName = "ChefRecipeApp_update_${System.currentTimeMillis()}.apk"
+            val fileName = "ChefRecipeApp_latest_${System.currentTimeMillis() % 10000}.apk"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val resolver = context.contentResolver
                 val values = ContentValues().apply {
@@ -391,9 +390,9 @@ object AppUpdateManager {
                 conn.disconnect()
 
                 withContext(Dispatchers.Main) {
-                    downloadedStatusText = "Запуск системного установщика Android..."
+                    downloadedStatusText = "Открываем системный установщик Android..."
                 }
-                val publicUri = saveApkToPublicDownloadsAndGetUri(context, apkFile)
+                val publicUri = saveApkToMediaStoreDownloads(context, apkFile)
                 withContext(Dispatchers.Main) {
                     triggerVisibleSystemInstaller(context, apkFile, publicUri)
                 }
@@ -401,11 +400,6 @@ object AppUpdateManager {
             } catch (e: Exception) { Result.failure(e) }
         }
 
-    private fun saveApkToPublicDownloadsAndGetUri(context: Context, sourceFile: File): Uri? {
-        return saveApkToMediaStoreDownloads(context, sourceFile)
-    }
-
-    // Открывает ВИДИМОЕ системное диалоговое окно Android "Обновить это приложение?"
     fun triggerVisibleSystemInstaller(context: Context, apkFile: File, mediaStoreUri: Uri?) {
         if (!apkFile.exists() || apkFile.length() == 0L) {
             Toast.makeText(context, "Файл обновления не найден", Toast.LENGTH_SHORT).show()
@@ -972,7 +966,6 @@ class MainActivity : ComponentActivity() {
 
         var startupCrashReport by mutableStateOf<String?>(null)
 
-        // Перехватываем любое необработанное исключение, чтобы показать его на экране вместо вылета
         Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
             val sw = StringWriter()
             throwable.printStackTrace(PrintWriter(sw))
@@ -1252,8 +1245,8 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Текущая установленная версия была собрана со старым временным ключом GitHub.", fontSize = 13.sp)
-                    Text("✅ Новая сборка уже сохранена в папку «Загрузки» (Downloads / ChefRecipeApp_latest.apk).", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
-                    Text("Нажмите «Удалить старую версию», затем установите ChefRecipeApp_latest.apk из Загрузок.", fontSize = 13.sp)
+                    Text("✅ Новая сборка уже сохранена в папку «Загрузки» (Downloads).", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                    Text("Нажмите «Удалить старую версию», затем установите свежий APK из Загрузок.", fontSize = 13.sp)
                 }
             },
             confirmButton = {
@@ -1320,7 +1313,12 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
 
                     if (isDownloadingUpdate) {
                         Column {
-                            Text(AppUpdateManager.downloadedStatusText.ifEmpty { "Скачивание APK: ${(downloadProgress * 100).roundToInt()}%" }), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                text = AppUpdateManager.downloadedStatusText.ifEmpty { "Скачивание APK: ${(downloadProgress * 100).roundToInt()}%" },
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
                             Spacer(modifier = Modifier.height(4.dp))
                             LinearProgressIndicator(progress = { downloadProgress }, modifier = Modifier.fillMaxWidth())
                         }
@@ -1348,7 +1346,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     val hasUpdate = (releaseInfo?.publishedAtMillis ?: 0L) > (installedTimeMillis + 60_000L)
-                    Text(if (hasUpdate) "Обновить сейчас" else "Переустановить APK")
+                    Text(if (hasUpdate) "Обновить сейчас" else "Скачать и установить")
                 }
             },
             dismissButton = {
@@ -1361,7 +1359,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
-        // Компактная шапка (42dp) с изумрудным бейджем v1.3 ⚡
+        // Компактная шапка (42dp) с огненным бейджем v1.4 🔥
         Row(
             modifier = Modifier.fillMaxWidth().height(42.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1375,14 +1373,14 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Surface(
-                    color = MaterialTheme.colorScheme.tertiary,
+                    color = MaterialTheme.colorScheme.primary,
                     shape = RoundedCornerShape(6.dp),
                     modifier = Modifier.clickable { showUpdateDialog = true; checkUpdatesNow(showToast = false) }
                 ) {
                     Text(
                         text = CURRENT_APP_VERSION,
                         fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onTertiary,
+                        color = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                     )
                 }
@@ -1652,7 +1650,6 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                             }
                         }
 
-                        // ИСПРАВЛЕНО: Уникальный составной ключ исключает сбой LazyColumn при дубликатах!
                         itemsIndexed(items = displayedRecipes, key = { idx, item -> "${item.id}_$idx" }) { index, recipe ->
                             val isFav = favoriteIdsSet.contains(recipe.id)
                             RecipeCard(
