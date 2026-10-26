@@ -3,6 +3,7 @@ package com.example.recipeapp
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.ActivityNotFoundException
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
@@ -13,8 +14,10 @@ import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
@@ -239,9 +242,11 @@ enum class AppScreen {
 }
 
 // =========================================================================
-// 3. МЕНЕДЖЕР АВТООБНОВЛЕНИЯ ПРИЛОЖЕНИЯ ЧЕРЕЗ GITHUB RELEASES
+// 3. ИСПРАВЛЕННЫЙ МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С GITHUB RELEASES
 // =========================================================================
 object AppUpdateManager {
+    // Глобальный сигнал о конфликте подписи (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
+    var signatureConflictState by mutableStateOf(false)
 
     fun getInstalledUpdateTimestamp(context: Context): Long {
         return try {
@@ -270,6 +275,7 @@ object AppUpdateManager {
         }
     }
 
+    // ИСПРАВЛЕНО: Сравниваем время релиза на GitHub СТРОГО с реальным временем установленного пакета (installedTime)!
     suspend fun checkGitHubUpdate(context: Context, repoPath: String = DEFAULT_GITHUB_REPO): Result<GitHubReleaseInfo> =
         withContext(Dispatchers.IO) {
             val cleanRepo = repoPath
@@ -280,11 +286,7 @@ object AppUpdateManager {
                 .ifEmpty { DEFAULT_GITHUB_REPO }
 
             val candidateRepos = listOf(cleanRepo, "GattlerGun/RecipeApp").distinct()
-
             val installedTime = getInstalledUpdateTimestamp(context)
-            val savedReleaseTime = context.getSharedPreferences("chef_app_v9_storage", Context.MODE_PRIVATE)
-                .getLong("last_installed_release_time", 0L)
-            val baselineTime = maxOf(installedTime, savedReleaseTime)
 
             for (repo in candidateRepos) {
                 val urlsToTry = listOf(
@@ -299,6 +301,7 @@ object AppUpdateManager {
                             requestMethod = "GET"
                             setRequestProperty("Accept", "application/vnd.github+json")
                             setRequestProperty("User-Agent", "ChefRecipeApp-Updater")
+                            setRequestProperty("Cache-Control", "no-cache")
                             connectTimeout = 7000
                             readTimeout = 7000
                         }
@@ -336,7 +339,8 @@ object AppUpdateManager {
                                 String.format(Locale.US, "%.1f МБ", sizeBytes / (1024.0 * 1024.0))
                             } else "APK сборка"
 
-                            val isNewer = remoteMillis > (baselineTime + 120_000L)
+                            // Если сборка на GitHub новее установленного на телефоне APK хотя бы на 1 минуту — есть обновление!
+                            val isNewer = remoteMillis > (installedTime + 60_000L)
 
                             return@withContext Result.success(
                                 GitHubReleaseInfo(
@@ -366,10 +370,37 @@ object AppUpdateManager {
                     publishedFormatted = "Последний билд в ветке main",
                     downloadUrl = directUrl,
                     sizeMb = "ChefRecipeApp.apk",
-                    isNewerThanInstalled = false
+                    isNewerThanInstalled = true
                 )
             )
         }
+
+    // Сохраняем копию APK также в системную папку "Загрузки" (Downloads), чтобы файл не удалялся при переустановке!
+    private fun copyApkToPublicDownloads(context: Context, sourceFile: File) {
+        try {
+            val fileName = "ChefRecipeApp_latest.apk"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val resolver = context.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                    put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
+                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                if (uri != null) {
+                    resolver.openOutputStream(uri)?.use { out ->
+                        sourceFile.inputStream().use { inp -> inp.copyTo(out) }
+                    }
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!downloadsDir.exists()) downloadsDir.mkdirs()
+                val destFile = File(downloadsDir, fileName)
+                sourceFile.copyTo(destFile, overwrite = true)
+            }
+        } catch (_: Exception) {}
+    }
 
     suspend fun downloadAndInstallApk(
         context: Context,
@@ -386,6 +417,7 @@ object AppUpdateManager {
                     instanceFollowRedirects = true
                     requestMethod = "GET"
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Android; ChefRecipeApp)")
+                    setRequestProperty("Cache-Control", "no-cache")
                     connectTimeout = 15000
                     readTimeout = 30000
                 }
@@ -427,12 +459,8 @@ object AppUpdateManager {
             }
             conn.disconnect()
 
-            if (releaseInfo.publishedAtMillis > 0L) {
-                context.getSharedPreferences("chef_app_v9_storage", Context.MODE_PRIVATE)
-                    .edit()
-                    .putLong("last_installed_release_time", releaseInfo.publishedAtMillis)
-                    .apply()
-            }
+            // Сохраняем резервную копию в папку Downloads телефона
+            copyApkToPublicDownloads(context, apkFile)
 
             withContext(Dispatchers.Main) {
                 triggerPackageInstaller(context, apkFile)
@@ -452,7 +480,7 @@ object AppUpdateManager {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
             Toast.makeText(
                 context,
-                "Разрешите установку обновлений для «Шеф-Повар» и нажмите «Установить» еще раз",
+                "Разрешите установку обновлений для «Шеф-Повар» и нажмите «Обновить» еще раз",
                 Toast.LENGTH_LONG
             ).show()
             val permIntent = Intent(
@@ -494,7 +522,7 @@ object AppUpdateManager {
 }
 
 // =========================================================================
-// 4. КУЛИНАРНЫЕ УТИЛИТЫ, ГЕНЕРАТОР ОПИСАНИЙ И ИСПРАВЛЕННЫЙ ПЕРЕВОДЧИК
+// 4. КУЛИНАРНЫЕ УТИЛИТЫ, ГЕНЕРАТОР ОПИСАНИЙ И ПЕРЕВОДЧИК
 // =========================================================================
 object CulinaryUtils {
     val CUISINES = listOf(
@@ -641,7 +669,6 @@ object CulinaryUtils {
         Regex("(?i)(\\d+)\\s*ч\\b\\.?") to "$1 час"
     )
 
-    // Исправлена обработка смешанных дробей ("1 1/2" -> "1.5", а не "1 0.5"!)
     private val UNIT_PRE_REPLACEMENTS = listOf(
         Regex("(?i)\\b(\\d+)\\s+1/2\\b") to "$1.5",
         Regex("(?i)\\b(\\d+)\\s+1/4\\b") to "$1.25",
@@ -1234,7 +1261,7 @@ class SpeechManager(
 }
 
 // =========================================================================
-// 7. ACTIVITY И ОБРАБОТЧИК УСТАНОВКИ ОБНОВЛЕНИЙ APK
+// 7. ACTIVITY И ОБРАБОТЧИК УСТАНОВКИ ОБНОВЛЕНИЙ APK (С ЗАЩИТОЙ ОТ КОНФЛИКТА ПОДПИСИ)
 // =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1273,7 +1300,9 @@ class MainActivity : ComponentActivity() {
 
     private fun handleInstallCommitIntent(intent: Intent?) {
         if (intent?.action == ACTION_INSTALL_COMMIT) {
-            when (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)) {
+            val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)
+            val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: ""
+            when (status) {
                 PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                     @Suppress("DEPRECATION")
                     val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
@@ -1284,15 +1313,15 @@ class MainActivity : ComponentActivity() {
                 PackageInstaller.STATUS_SUCCESS -> {
                     Toast.makeText(this, "✅ Приложение успешно обновлено!", Toast.LENGTH_LONG).show()
                 }
-                PackageInstaller.STATUS_FAILURE,
-                PackageInstaller.STATUS_FAILURE_ABORTED,
-                PackageInstaller.STATUS_FAILURE_BLOCKED,
-                PackageInstaller.STATUS_FAILURE_CONFLICT,
-                PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
-                PackageInstaller.STATUS_FAILURE_INVALID,
-                PackageInstaller.STATUS_FAILURE_STORAGE -> {
-                    val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "Отменено"
-                    Toast.makeText(this, "Установка не завершена: $msg", Toast.LENGTH_SHORT).show()
+                PackageInstaller.STATUS_FAILURE_CONFLICT -> {
+                    AppUpdateManager.signatureConflictState = true
+                }
+                else -> {
+                    if (msg.contains("INCOMPATIBLE", ignoreCase = true) || msg.contains("signature", ignoreCase = true)) {
+                        AppUpdateManager.signatureConflictState = true
+                    } else if (status != -1) {
+                        Toast.makeText(this, "Установка не завершена: $msg", Toast.LENGTH_LONG).show()
+                    }
                 }
             }
         }
@@ -1300,7 +1329,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // =========================================================================
-// 8. ГЛАВНЫЙ ЭКРАН С ГЛОБАЛЬНЫМ ПОИСКОМ И НЕЛОМАЮЩИМИСЯ ФИЛЬТРАМИ
+// 8. ГЛАВНЫЙ ЭКРАН
 // =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1358,7 +1387,7 @@ fun RecipeAppScreen(
         storage.saveAllAsync(fridgeItems, shoppingListItems, favoriteRecipes, customUserRecipes)
     }
 
-    fun checkUpdatesNow(showToastIfUpToDate: Boolean = false) {
+    fun checkUpdatesNow(showToast: Boolean = false) {
         coroutineScope.launch {
             isCheckingUpdate = true
             storage.saveGitHubRepo(githubRepoInput)
@@ -1367,12 +1396,12 @@ fun RecipeAppScreen(
             res.onSuccess { info ->
                 releaseInfo = info
                 if (info.isNewerThanInstalled) {
-                    Toast.makeText(context, "🚀 На GitHub доступна новая сборка приложения!", Toast.LENGTH_LONG).show()
-                } else if (showToastIfUpToDate) {
-                    Toast.makeText(context, "✅ У вас установлена актуальная сборка", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "🚀 На GitHub доступна более свежая сборка (${info.publishedFormatted})!", Toast.LENGTH_LONG).show()
+                } else if (showToast) {
+                    Toast.makeText(context, "✅ У вас установлена самая свежая сборка", Toast.LENGTH_SHORT).show()
                 }
             }.onFailure { err ->
-                if (showToastIfUpToDate) {
+                if (showToast) {
                     Toast.makeText(context, "Ошибка проверки GitHub: ${err.localizedMessage}", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -1380,7 +1409,7 @@ fun RecipeAppScreen(
     }
 
     LaunchedEffect(Unit) {
-        checkUpdatesNow(showToastIfUpToDate = false)
+        checkUpdatesNow(showToast = false)
     }
 
     var recipes by remember {
@@ -1449,7 +1478,6 @@ fun RecipeAppScreen(
         }
     }
 
-    // ЖИВОЙ ГЛОБАЛЬНЫЙ ПОИСК (Ищет сразу по всем базам + подгружает из интернета при вводе запроса!)
     LaunchedEffect(searchQuery) {
         val q = searchQuery.trim()
         if (q.length < 2) {
@@ -1528,7 +1556,6 @@ fun RecipeAppScreen(
         }
     }
 
-    // ИСПРАВЛЕНО: Когда введен текст в Поиск, ищем по ВСЕМ базам сразу (Локальная + Свои + Избранное + Текущие + Онлайн)!
     val displayedRecipes by remember(
         recipes,
         showOnlyFavorites,
@@ -1576,7 +1603,62 @@ fun RecipeAppScreen(
         }
     }
 
+    // Окно автоматического решения конфликта подписи (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
+    if (AppUpdateManager.signatureConflictState) {
+        AlertDialog(
+            onDismissRequest = { AppUpdateManager.signatureConflictState = false },
+            title = {
+                Text("⚠️ Конфликт подписи старой сборки", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Текущая установленная версия была собрана со старым временным ключом GitHub, поэтому Android не позволяет перезаписать её напрямую.",
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        "✅ Новая сборка уже скачана и сохранена в папку «Загрузки» (Downloads / ChefRecipeApp_latest.apk).",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        "Нажмите «Удалить старую версию», а затем откройте файл ChefRecipeApp_latest.apk из Загрузок. Все следующие сборки с постоянным ключом будут ставиться поверх в 1 клик!",
+                        fontSize = 13.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        AppUpdateManager.signatureConflictState = false
+                        val uninstallIntent = Intent(
+                            Intent.ACTION_DELETE,
+                            Uri.parse("package:${context.packageName}")
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(uninstallIntent)
+                    }
+                ) {
+                    Text("Удалить старую версию")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { AppUpdateManager.signatureConflictState = false }) {
+                    Text("Позже")
+                }
+            }
+        )
+    }
+
+    // Модальное окно проверки и установки обновления с GitHub
     if (showUpdateDialog) {
+        val installedTimeMillis = remember(showUpdateDialog) {
+            AppUpdateManager.getInstalledUpdateTimestamp(context)
+        }
+        val installedTimeStr = remember(installedTimeMillis) {
+            AppUpdateManager.formatTimestamp(installedTimeMillis)
+        }
+
         AlertDialog(
             onDismissRequest = { if (!isDownloadingUpdate) showUpdateDialog = false },
             title = {
@@ -1596,31 +1678,30 @@ fun RecipeAppScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    val installedTimeStr = remember {
-                        AppUpdateManager.formatTimestamp(AppUpdateManager.getInstalledUpdateTimestamp(context))
-                    }
                     Text("📱 Установленная версия: $installedTimeStr", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                     if (isCheckingUpdate) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Проверяем релизы на GitHub...", fontSize = 13.sp)
+                            Text("Проверяем свежий релиз на GitHub...", fontSize = 13.sp)
                         }
                     } else if (releaseInfo != null) {
                         val info = releaseInfo!!
+                        val isNewAvailable = info.publishedAtMillis > (installedTimeMillis + 60_000L)
+
                         Surface(
-                            color = if (info.isNewerThanInstalled) Color(0xFF1B3B22) else MaterialTheme.colorScheme.surfaceVariant,
+                            color = if (isNewAvailable) Color(0xFF1B3B22) else MaterialTheme.colorScheme.surfaceVariant,
                             shape = RoundedCornerShape(10.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    text = if (info.isNewerThanInstalled) "🚀 Доступна новая сборка на GitHub!"
+                                    text = if (isNewAvailable) "🚀 Доступна новая версия на GitHub!"
                                     else "✅ Установлена последняя версия",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
-                                    color = if (info.isNewerThanInstalled) Color(0xFFA5D6A7) else MaterialTheme.colorScheme.onSurface
+                                    color = if (isNewAvailable) Color(0xFFA5D6A7) else MaterialTheme.colorScheme.onSurface
                                 )
                                 Text("📦 Релиз: ${info.releaseTitle}", fontSize = 12.sp)
                                 Text("🕒 Сборка на GitHub: ${info.publishedFormatted}", fontSize = 12.sp)
@@ -1673,13 +1754,14 @@ fun RecipeAppScreen(
                 ) {
                     Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (releaseInfo?.isNewerThanInstalled == true) "Обновить сейчас" else "Скачать и установить APK")
+                    val hasUpdate = (releaseInfo?.publishedAtMillis ?: 0L) > (installedTimeMillis + 60_000L)
+                    Text(if (hasUpdate) "Обновить сейчас" else "Переустановить APK")
                 }
             },
             dismissButton = {
                 Row {
                     TextButton(
-                        onClick = { checkUpdatesNow(showToastIfUpToDate = true) },
+                        onClick = { checkUpdatesNow(showToast = true) },
                         enabled = !isDownloadingUpdate && !isCheckingUpdate
                     ) {
                         Text("Проверить")
@@ -1696,7 +1778,7 @@ fun RecipeAppScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
-        // Компактная верхняя строка (40dp)
+        // Компактная верхняя строка (42dp)
         Row(
             modifier = Modifier.fillMaxWidth().height(42.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1725,7 +1807,7 @@ fun RecipeAppScreen(
                     IconButton(
                         onClick = {
                             showUpdateDialog = true
-                            checkUpdatesNow(showToastIfUpToDate = false)
+                            checkUpdatesNow(showToast = false)
                         },
                         modifier = Modifier.size(30.dp)
                     ) {
@@ -1834,7 +1916,6 @@ fun RecipeAppScreen(
             }
         }
 
-        // Выдвижная строка глобального поиска
         AnimatedVisibility(visible = isSearchVisible && currentScreen == AppScreen.RECIPES) {
             Column {
                 OutlinedTextField(
@@ -1892,10 +1973,6 @@ fun RecipeAppScreen(
             }
 
             AppScreen.RECIPES -> {
-                // =========================================================================
-                // ИСПРАВЛЕННАЯ ПАНЕЛЬ ФИЛЬТРОВ: СЛАЙДЕР КОЛИЧЕСТВА И КНОПКА "ПОДОБРАТЬ"
-                // ВСЕГДА ЗАКРЕПЛЕНЫ И НИКОГДА НЕ УЛЕТАЮТ ЗА ПРЕДЕЛЫ ЭКРАНА!
-                // =========================================================================
                 AnimatedVisibility(visible = isFiltersExpanded && !showOnlyFavorites) {
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
@@ -1903,7 +1980,6 @@ fun RecipeAppScreen(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            // Прокручиваемая средняя область с правильным порядком heightIn -> verticalScroll
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1933,7 +2009,6 @@ fun RecipeAppScreen(
                                     }
                                 }
 
-                                // Компактный блок холодильника
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1983,7 +2058,6 @@ fun RecipeAppScreen(
                                     }
                                 }
 
-                                // Объединенная строка: сначала выбранные продукты (с крестиком), затем быстрые подсказки
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     items(fridgeItems) { item ->
                                         InputChip(
@@ -2044,7 +2118,6 @@ fun RecipeAppScreen(
 
                             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                            // ЗАКРЕПЛЕННЫЙ НИЖНИЙ БЛОК: Слайдер количества (5-20) и кнопка "Подобрать" всегда видны!
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -2654,7 +2727,7 @@ fun ShoppingListView(
 }
 
 // =========================================================================
-// 11. КАРТОЧКА РЕЦЕПТА С БЛОКОМ КРАТКОГО ОПИСАНИЯ БЛЮДА
+// 11. КАРТОЧКА РЕЦЕПТА С ОПИСАНИЕМ И ОТПРАВКОЙ РЕЦЕПТА
 // =========================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -2736,10 +2809,31 @@ fun RecipeCard(
                         fontWeight = FontWeight.Bold
                     )
                 }
-                Row {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = {
+                            val shareText = buildString {
+                                append("🍲 ${recipe.title} (${recipe.cuisine})\n")
+                                append("📖 ${recipe.description}\n")
+                                append("⏱ ${recipe.cookingTime} • 🔥 ${recipe.calories} ккал\n\n")
+                                append("🛒 Ингредиенты (на $portions порц.):\n")
+                                scaledIngredients.forEach { append("• $it\n") }
+                                append("\n👨‍🍳 Приготовление:\n")
+                                safeInstructions.forEachIndexed { idx, s -> append("${idx + 1}. $s\n") }
+                            }
+                            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                putExtra(Intent.EXTRA_TEXT, shareText)
+                                type = "text/plain"
+                            }
+                            context.startActivity(Intent.createChooser(sendIntent, "Поделиться рецептом"))
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.Share, contentDescription = "Поделиться", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                    }
                     if (onDeleteCustom != null) {
-                        IconButton(onClick = onDeleteCustom, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        IconButton(onClick = onDeleteCustom, modifier = Modifier.size(32.dp)) {
+                            Icon(Icons.Default.Delete, contentDescription = "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(19.dp))
                         }
                     }
                     IconButton(onClick = onToggleFavorite, modifier = Modifier.size(34.dp)) {
@@ -3318,7 +3412,6 @@ object RecipeRepository {
         return@withPermit sanitizedLines.map { translateEnToRu(it) }
     }
 
-    // Глобальный сетевой поиск по введённому слову в строке поиска
     suspend fun searchGlobalOnlineRecipes(queryRu: String): List<Recipe> = withContext(Dispatchers.IO) {
         try {
             val enQuery = URLEncoder.encode(translateRuToEn(queryRu), "UTF-8")
@@ -3527,7 +3620,6 @@ object RecipeRepository {
                     val stepsList = extractStepsFromJsonObject(obj, ruTitle, ingList)
                         .map { translateEnToRu(it) }
 
-                    // Если пользователь выбрал конкретную кухню — жестко фиксируем ее!
                     val realCuisine = if (cuisine != "Все") cuisine else CulinaryUtils.resolveRealCuisine(
                         obj.optString("cuisine", ""),
                         ruTitle,
@@ -3573,7 +3665,6 @@ object RecipeRepository {
         return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
-    // ИСПРАВЛЕНО: Строгое соблюдение выбранной кухни в Мировой базе (никакой Канадской кухни при выборе Корейской!)
     suspend fun fetchTranslatedMealDbRecipes(
         cuisine: String,
         category: String,
@@ -3589,8 +3680,6 @@ object RecipeRepository {
                 "Тайская" to "Thai", "Индийская" to "Indian"
             )
 
-            // В TheMealDB нет отдельных разделов Area для Корейской и Грузинской кухни,
-            // поэтому для них используем ИИ + богатую локальную корейскую/грузинскую базу, чтобы НЕ подсовывать Канадские пироги!
             if (cuisine != "Все" && !areaMap.containsKey(cuisine)) {
                 return@withContext fetchAiRussianRecipes(cuisine, category, fridgeItems, customRecipes, null, count, refreshSeed)
             }
@@ -3609,7 +3698,6 @@ object RecipeRepository {
             val rotatedLetter = searchLetters[refreshSeed % searchLetters.size]
             val secondCategoryForVariety = listOf("Chicken", "Beef", "Seafood", "Pork", "Pasta")[refreshSeed % 5]
 
-            // ПРИОРИТЕТ №1 — выбранная пользователем КУХНЯ!
             val endpointUrl = when {
                 cuisine != "Все" && areaMap.containsKey(cuisine) ->
                     "https://www.themealdb.com/api/json/v1/1/filter.php?a=${areaMap[cuisine]}"
@@ -3662,7 +3750,6 @@ object RecipeRepository {
                         }
                     }.awaitAll().filterNotNull()
                         .filter { recipe ->
-                            // Строгий фильтр: если пользователь выбрал конкретную кухню, пропускаем только её!
                             cuisine == "Все" || recipe.cuisine.equals(cuisine, ignoreCase = true)
                         }
                         .toMutableList()
@@ -3683,7 +3770,6 @@ object RecipeRepository {
         return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
-    // ИСПРАВЛЕНО: Локальная база никогда не подмешивает чужие кухни, если выбрана конкретная кухня!
     fun buildLocalDatabaseRecipes(
         cuisine: String,
         category: String,
@@ -3696,14 +3782,11 @@ object RecipeRepository {
         val shuffledPool = CURATED_LOCAL_RECIPES.shuffled(randomForBatch)
         val allRecipes = customRecipes + shuffledPool
 
-        // 1. Сначала ищем точные совпадения по кухне и категории
         val exactMatches = allRecipes.filter { r ->
             (cuisine == "Все" || r.cuisine.equals(cuisine, ignoreCase = true)) &&
             (category == "Все" || r.category.equals(category, ignoreCase = true))
         }.toMutableList()
 
-        // 2. Если в выбранной кухне мало блюд узкой категории (например, "Корейская" -> "Выпечка"),
-        // добавляем другие блюда ТОЛЬКО ЭТОЙ ЖЕ КУХНИ (но никогда не чужой кухни!)
         if (exactMatches.size < count && cuisine != "Все") {
             val usedIds = exactMatches.map { it.id }.toMutableSet()
             val sameCuisineOtherCat = allRecipes.filter { r ->
@@ -3744,7 +3827,6 @@ object RecipeRepository {
             )
         }
 
-        // 3. Если пользователь запросил 15-20 вариантов одной конкретной кухни, создаем авторские вариации блюд ЭТОЙ ЖЕ кухни
         if (exactMatches.isNotEmpty() && exactMatches.size < count) {
             val baseList = exactMatches.toList()
             val styles = listOf(
@@ -3770,7 +3852,6 @@ object RecipeRepository {
     }
 
     private val CURATED_LOCAL_RECIPES = listOf(
-        // ================= РУССКАЯ КУХНЯ =================
         Recipe(
             id = "loc_borscht",
             title = "Классический борщ с говядиной и сметаной",
@@ -3915,7 +3996,6 @@ object RecipeRepository {
                 "Добавьте зеленый горошек, заправьте сметаной или майонезом и охладите в холодильнике 10 минут."
             )
         ),
-        // ================= КОРЕЙСКАЯ КУХНЯ (РАСШИРЕННАЯ) =================
         Recipe(
             id = "loc_kimchi_soup",
             title = "Острый корейский суп Кимчи Тиге со свининой и тофу",
@@ -4036,7 +4116,6 @@ object RecipeRepository {
                 "Долейте оставшуюся яичную смесь в 2 приема, каждый раз оборачивая рулет новыми слоями в течение 5 минут, затем нарежьте ломтиками."
             )
         ),
-        // ================= ФРАНЦУЗСКАЯ КУХНЯ =================
         Recipe(
             id = "loc_french_gratin",
             title = "Французский картофельный гратен Дофинуа со сливками и сыром",
@@ -4117,7 +4196,6 @@ object RecipeRepository {
                 "Разложите по формам, обильно посыпьте тертым сыром и запекайте в духовке 12 минут при 190°C."
             )
         ),
-        // ================= ИТАЛЬЯНСКАЯ, ГРУЗИНСКАЯ, ЯПОНСКАЯ, МЕКСИКАНСКАЯ, ТАЙСКАЯ, ИНДИЙСКАЯ =================
         Recipe(
             id = "loc_carbonara",
             title = "Итальянская паста Карбонара с беконом и Пармезаном",
