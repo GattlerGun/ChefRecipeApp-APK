@@ -1,769 +1,13 @@
-package com.example.recipeapp
-
-import android.app.Activity
-import android.app.PendingIntent
-import android.content.ActivityNotFoundException
-import android.content.ContentValues
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageInstaller
-import android.media.AudioAttributes
-import android.media.AudioManager
-import android.media.MediaPlayer
-import android.media.ToneGenerator
-import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.os.Environment
-import android.os.Handler
-import android.os.Looper
-import android.provider.MediaStore
-import android.provider.Settings
-import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
-import android.speech.tts.Voice
-import android.view.WindowManager
-import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextDecoration
-import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
-import coil.request.CachePolicy
-import coil.request.ImageRequest
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.io.FileOutputStream
-import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
-import java.text.SimpleDateFormat
-import java.util.Collections
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.roundToInt
-import kotlin.random.Random
-
-private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
-private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
-private const val CURRENT_APP_VERSION = "v1.2 ⚡"
-private const val WHATS_NEW_TEXT = "• Исправлен запуск приложения (Lazy-инициализация)\n• Добавлен блок «💡 Секрет Шефа» в карточки рецептов\n• Кнопка «🎲 Случайное блюдо» и защита экрана от затухания"
-
-private val LightCulinaryColorScheme = lightColorScheme(
-    primary = Color(0xFFD84315), onPrimary = Color.White,
-    primaryContainer = Color(0xFFFFCCBC), onPrimaryContainer = Color(0xFF3E2723),
-    secondary = Color(0xFFEF6C00), onSecondary = Color.White,
-    secondaryContainer = Color(0xFFFFE0B2), onSecondaryContainer = Color(0xFF4E342E),
-    tertiary = Color(0xFF2E7D32), onTertiary = Color.White,
-    background = Color(0xFFFFFBF8), onBackground = Color(0xFF1C1B1F),
-    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1C1B1F),
-    surfaceVariant = Color(0xFFF5EBE6), onSurfaceVariant = Color(0xFF49454F)
-)
-
-private val DarkCulinaryColorScheme = darkColorScheme(
-    primary = Color(0xFFFF8A65), onPrimary = Color(0xFF3E2723),
-    primaryContainer = Color(0xFF5D4037), onPrimaryContainer = Color(0xFFFFCCBC),
-    secondary = Color(0xFFFFB74D), onSecondary = Color(0xFF3E2723),
-    secondaryContainer = Color(0xFF4E342E), onSecondaryContainer = Color(0xFFFFE0B2),
-    tertiary = Color(0xFF81C784), onTertiary = Color(0xFF1B5E20),
-    background = Color(0xFF121212), onBackground = Color(0xFFEDE0DC),
-    surface = Color(0xFF1E1E1E), onSurface = Color(0xFFEDE0DC),
-    surfaceVariant = Color(0xFF2C2624), onSurfaceVariant = Color(0xFFD7CCC8)
-)
-
-@Immutable
-data class Recipe(
-    val id: String,
-    val title: String,
-    val description: String,
-    val cuisine: String,
-    val category: String,
-    val cookingTime: String,
-    val difficulty: String,
-    val calories: Int,
-    val imageUrls: List<String>,
-    val ingredients: List<String>,
-    val instructions: List<String>,
-    val isCustom: Boolean = false
-) {
-    // Вычисляются лениво (by lazy) только при реальном обращении, исключая краш при старте!
-    val cookingMinutes: Int by lazy { CulinaryUtils.parseCookingMinutesOnce(cookingTime) }
-    val chefTip: String by lazy { CulinaryUtils.buildChefTip(category, cuisine) }
-    val searchIndexText: String by lazy {
-        buildString {
-            append(title.lowercase()).append(' ')
-            append(description.lowercase()).append(' ')
-            append(cuisine.lowercase()).append(' ')
-            append(category.lowercase()).append(' ')
-            ingredients.forEach { append(it.lowercase()).append(' ') }
-        }
-    }
-
-    fun toJson(): JSONObject = JSONObject().apply {
-        put("id", id); put("title", title); put("description", description)
-        put("cuisine", cuisine); put("category", category); put("cookingTime", cookingTime)
-        put("difficulty", difficulty); put("calories", calories); put("isCustom", isCustom)
-        put("imageUrls", JSONArray(imageUrls)); put("ingredients", JSONArray(ingredients))
-        put("instructions", JSONArray(instructions))
-    }
-
-    companion object {
-        fun fromJson(obj: JSONObject): Recipe {
-            val imgs = obj.optJSONArray("imageUrls") ?: JSONArray()
-            val ings = obj.optJSONArray("ingredients") ?: JSONArray()
-            val insts = obj.optJSONArray("instructions") ?: JSONArray()
-            val title = obj.optString("title", "Домашнее блюдо")
-            val cuisine = obj.optString("cuisine", "Домашняя")
-            val category = obj.optString("category", "Вторые блюда")
-            val ingList = List(ings.length()) { ings.getString(it) }
-            val rawDesc = obj.optString("description", "")
-            val cleanImages = List(imgs.length()) { imgs.getString(it) }
-                .filter { !it.contains("/images/ingredients/", ignoreCase = true) }
-                .ifEmpty { CulinaryUtils.buildDishPhotoUrls(title, 1) }
-
-            return Recipe(
-                id = obj.optString("id", "rec_${System.currentTimeMillis()}"),
-                title = title,
-                description = if (rawDesc.isNotBlank()) rawDesc else CulinaryUtils.buildDishDescription(title, cuisine, category, ingList),
-                cuisine = cuisine, category = category,
-                cookingTime = obj.optString("cookingTime", "30 мин"),
-                difficulty = obj.optString("difficulty", "Легко"),
-                calories = obj.optInt("calories", 250),
-                imageUrls = cleanImages, ingredients = ingList,
-                instructions = List(insts.length()) { insts.getString(it) },
-                isCustom = obj.optBoolean("isCustom", false)
-            )
-        }
-    }
-}
-
-@Immutable
-data class ParsedTimer(val durationSeconds: Int, val label: String)
-
-@Immutable
-data class GitHubReleaseInfo(
-    val repoName: String,
-    val releaseTitle: String,
-    val publishedAtMillis: Long,
-    val publishedFormatted: String,
-    val downloadUrl: String,
-    val sizeMb: String,
-    val isNewerThanInstalled: Boolean
-)
-
-enum class DataSourceMode(val shortLabel: String, val fullLabel: String) {
-    LOCAL("📚 Локальная", "📚 Локальная база"),
-    MEAL_DB_API("🌍 Мировая", "🌍 Мировая база (RU)"),
-    FREE_AI("✨ ИИ Шеф", "✨ ИИ Шеф (RU)")
-}
-
-enum class SortOrder(val label: String) {
-    FRESH_BATCH("🎲 Новизна"),
-    FRIDGE_MATCH("🧊 По холодильнику"),
-    FASTEST("⚡ Быстрые"),
-    LOW_CALORIE("🥗 Легкие")
-}
-
-enum class AppScreen { RECIPES, SHOPPING_LIST, ADD_RECIPE }
-
 // =========================================================================
-// МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С GITHUB RELEASES
-// =========================================================================
-object AppUpdateManager {
-    var signatureConflictState by mutableStateOf(false)
-
-    fun getInstalledUpdateTimestamp(context: Context): Long = try {
-        context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
-    } catch (_: Exception) { 0L }
-
-    fun formatTimestamp(millis: Long): String {
-        if (millis <= 0L) return "Неизвестно"
-        return SimpleDateFormat("dd.MM.yyyy в HH:mm", Locale.getDefault()).format(Date(millis))
-    }
-
-    private fun parseIsoTimestamp(iso: String): Long {
-        if (iso.isBlank()) return 0L
-        return try {
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
-                timeZone = TimeZone.getTimeZone("UTC")
-            }.parse(iso)?.time ?: 0L
-        } catch (_: Exception) { 0L }
-    }
-
-    suspend fun checkGitHubUpdate(context: Context, repoPath: String = DEFAULT_GITHUB_REPO): Result<GitHubReleaseInfo> =
-        withContext(Dispatchers.IO) {
-            val cleanRepo = repoPath.removePrefix("https://github.com/").removePrefix("http://github.com/")
-                .removePrefix("github.com/").trim('/').ifEmpty { DEFAULT_GITHUB_REPO }
-            val candidateRepos = listOf(cleanRepo, "GattlerGun/RecipeApp").distinct()
-            val installedTime = getInstalledUpdateTimestamp(context)
-
-            for (repo in candidateRepos) {
-                val urls = listOf(
-                    "https://api.github.com/repos/$repo/releases/tags/latest-apk",
-                    "https://api.github.com/repos/$repo/releases/latest",
-                    "https://api.github.com/repos/$repo/releases"
-                )
-                for (apiUrl in urls) {
-                    var conn: HttpURLConnection? = null
-                    try {
-                        conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
-                            requestMethod = "GET"
-                            setRequestProperty("Accept", "application/vnd.github+json")
-                            setRequestProperty("User-Agent", "ChefRecipeApp-Updater")
-                            setRequestProperty("Cache-Control", "no-cache")
-                            connectTimeout = 6000; readTimeout = 6000
-                        }
-                        if (conn.responseCode == 200) {
-                            val body = conn.inputStream.bufferedReader().use { it.readText() }
-                            val releaseObj = if (body.trimStart().startsWith("[")) {
-                                val arr = JSONArray(body)
-                                if (arr.length() > 0) arr.getJSONObject(0) else continue
-                            } else JSONObject(body)
-
-                            val assets = releaseObj.optJSONArray("assets") ?: JSONArray()
-                            var apkUrl = ""
-                            var assetUpdatedIso = releaseObj.optString("published_at", "")
-                            var sizeBytes = 0L
-
-                            for (i in 0 until assets.length()) {
-                                val asset = assets.getJSONObject(i)
-                                if (asset.optString("name", "").endsWith(".apk", ignoreCase = true)) {
-                                    apkUrl = asset.optString("browser_download_url", "")
-                                    assetUpdatedIso = asset.optString("updated_at", assetUpdatedIso)
-                                    sizeBytes = asset.optLong("size", 0L)
-                                    break
-                                }
-                            }
-                            if (apkUrl.isEmpty()) apkUrl = "https://github.com/$repo/releases/download/latest-apk/ChefRecipeApp.apk"
-                            val remoteMillis = parseIsoTimestamp(assetUpdatedIso)
-                            val sizeMb = if (sizeBytes > 0) String.format(Locale.US, "%.1f МБ", sizeBytes / 1048576.0) else "APK сборка"
-                            val isNewer = remoteMillis > (installedTime + 60_000L)
-
-                            return@withContext Result.success(
-                                GitHubReleaseInfo(
-                                    repoName = repo,
-                                    releaseTitle = releaseObj.optString("name", "Свежая сборка APK"),
-                                    publishedAtMillis = remoteMillis,
-                                    publishedFormatted = formatTimestamp(remoteMillis),
-                                    downloadUrl = apkUrl,
-                                    sizeMb = sizeMb,
-                                    isNewerThanInstalled = isNewer
-                                )
-                            )
-                        }
-                    } catch (_: Exception) {
-                    } finally { conn?.disconnect() }
-                }
-            }
-            val directUrl = "https://github.com/$cleanRepo/releases/download/latest-apk/ChefRecipeApp.apk"
-            Result.success(
-                GitHubReleaseInfo(
-                    repoName = cleanRepo, releaseTitle = "Прямая сборка (latest-apk)",
-                    publishedAtMillis = System.currentTimeMillis(), publishedFormatted = "Последний билд в main",
-                    downloadUrl = directUrl, sizeMb = "ChefRecipeApp.apk", isNewerThanInstalled = true
-                )
-            )
-        }
-
-    private fun copyApkToPublicDownloads(context: Context, sourceFile: File) {
-        try {
-            val fileName = "ChefRecipeApp_latest.apk"
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val resolver = context.contentResolver
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
-                    put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                }
-                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                if (uri != null) resolver.openOutputStream(uri)?.use { out -> sourceFile.inputStream().use { it.copyTo(out) } }
-            } else {
-                @Suppress("DEPRECATION")
-                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!dir.exists()) dir.mkdirs()
-                sourceFile.copyTo(File(dir, fileName), overwrite = true)
-            }
-        } catch (_: Exception) {}
-    }
-
-    suspend fun downloadAndInstallApk(context: Context, releaseInfo: GitHubReleaseInfo, onProgress: (Float) -> Unit): Result<Unit> =
-        withContext(Dispatchers.IO) {
-            try {
-                var currentUrl = releaseInfo.downloadUrl
-                var redirects = 0
-                var conn: HttpURLConnection
-                while (true) {
-                    conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-                        instanceFollowRedirects = true; requestMethod = "GET"
-                        setRequestProperty("User-Agent", "Mozilla/5.0 (Android; ChefRecipeApp)")
-                        setRequestProperty("Cache-Control", "no-cache")
-                        connectTimeout = 15000; readTimeout = 30000
-                    }
-                    if (conn.responseCode in listOf(301, 302, 303, 307, 308)) {
-                        val loc = conn.getHeaderField("Location")
-                        conn.disconnect()
-                        if (loc.isNullOrBlank() || redirects >= 6) break
-                        currentUrl = loc; redirects++
-                    } else break
-                }
-                if (conn.responseCode != 200) {
-                    conn.disconnect()
-                    return@withContext Result.failure(Exception("APK еще не выгружен в Releases (код ${conn.responseCode})"))
-                }
-                val totalBytes = conn.contentLengthLong
-                val apkFile = File(context.externalCacheDir ?: context.cacheDir, "ChefRecipeApp_update.apk")
-                if (apkFile.exists()) apkFile.delete()
-
-                conn.inputStream.use { input ->
-                    FileOutputStream(apkFile).use { output ->
-                        val buffer = ByteArray(32 * 1024)
-                        var downloaded = 0L
-                        var read: Int
-                        while (input.read(buffer).also { read = it } != -1) {
-                            output.write(buffer, 0, read)
-                            downloaded += read
-                            if (totalBytes > 0) onProgress((downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f))
-                        }
-                        output.flush()
-                    }
-                }
-                conn.disconnect()
-                copyApkToPublicDownloads(context, apkFile)
-                withContext(Dispatchers.Main) { triggerPackageInstaller(context, apkFile) }
-                Result.success(Unit)
-            } catch (e: Exception) { Result.failure(e) }
-        }
-
-    fun triggerPackageInstaller(context: Context, apkFile: File) {
-        if (!apkFile.exists() || apkFile.length() == 0L) {
-            Toast.makeText(context, "Файл обновления не найден", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-            Toast.makeText(context, "Разрешите установку обновлений для «Шеф-Повар» и нажмите «Обновить» еще раз", Toast.LENGTH_LONG).show()
-            context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            return
-        }
-        var session: PackageInstaller.Session? = null
-        try {
-            val installer = context.packageManager.packageInstaller
-            try { installer.mySessions.forEach { installer.abandonSession(it.sessionId) } } catch (_: Exception) {}
-            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-            val sessionId = installer.createSession(params)
-            session = installer.openSession(sessionId)
-            apkFile.inputStream().use { input ->
-                session.openWrite("ChefRecipeApp_update.apk", 0, apkFile.length()).use { output ->
-                    input.copyTo(output, 32 * 1024)
-                    session.fsync(output)
-                }
-            }
-            val callbackIntent = Intent(context, MainActivity::class.java).apply { action = ACTION_INSTALL_COMMIT }
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
-            val pendingIntent = PendingIntent.getActivity(context, sessionId, callbackIntent, flags)
-            session.commit(pendingIntent.intentSender)
-        } catch (e: Exception) {
-            Toast.makeText(context, "Ошибка установщика: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-        } finally {
-            try { session?.close() } catch (_: Exception) {}
-        }
-    }
-}
-
-// =========================================================================
-// КУЛИНАРНЫЕ УТИЛИТЫ И СЛОВАРЬ (ВСЕ ПОЛЯ ОБЪЯВЛЕНЫ СТРОГО ДО ФУНКЦИЙ)
-// =========================================================================
-object CulinaryUtils {
-    val CUISINES = listOf("Все", "Русская", "Корейская", "Французская", "Итальянская", "Японская", "Грузинская", "Мексиканская", "Китайская", "Тайская", "Индийская")
-    val CATEGORIES = listOf("Все", "Супы", "Каши и завтраки", "Вторые блюда", "Выпечка", "Что-то к чаю", "Салаты", "Паста и пицца")
-    val QUICK_FRIDGE = listOf("Курица", "Яйца", "Картофель", "Сыр", "Томаты", "Молоко", "Рис", "Фарш", "Творог", "Капуста", "Грибы")
-
-    private val HOURS_REGEX = Regex("(\\d+)\\s*ч")
-    private val MINS_REGEX = Regex("(\\d+)\\s*мин")
-    private val ANY_DIGIT_REGEX = Regex("(\\d+)")
-    private val TIMER_REGEX = Regex("(\\d+)\\s*(мин(?:ут[а-хей]?)?|час(?:[а-ов]?)?|сек(?:унд[а-хей]?)?)", RegexOption.IGNORE_CASE)
-    private val NUMBER_REGEX = Regex("(\\d+(?:[.,]\\d+)?)")
-    private val STEP_SPLIT_REGEX = Regex("(?=\\b\\d+\\.)|\\r?\\n")
-    private val STEP_PREFIX_REGEX = Regex("^\\d+[.)]\\s*")
-    private val SENTENCE_SPLIT_REGEX = Regex("(?<=[.!?])\\s+")
-    private val LATIN_REGEX = Regex("[a-zA-Z]{2,}")
-    private val NON_WORD_REGEX = Regex("[^а-яёa-z\\s-]")
-    private val WHITESPACE_REGEX = Regex("\\s+")
-
-    private val AREA_TO_RUSSIAN_CUISINE = mapOf(
-        "russian" to "Русская", "korean" to "Корейская", "french" to "Французская", "italian" to "Итальянская",
-        "japanese" to "Японская", "georgian" to "Грузинская", "mexican" to "Мексиканская", "chinese" to "Китайская",
-        "thai" to "Тайская", "indian" to "Индийская", "greek" to "Греческая", "spanish" to "Испанская",
-        "turkish" to "Турецкая", "vietnamese" to "Вьетнамская", "moroccan" to "Марокканская", "american" to "Американская",
-        "british" to "Британская", "polish" to "Польская", "ukrainian" to "Украинская", "croatian" to "Хорватская",
-        "irish" to "Ирландская", "jamaican" to "Ямайская", "egyptian" to "Египетская", "dutch" to "Голландская",
-        "portuguese" to "Португальская", "canadian" to "Канадская", "malaysian" to "Малайзийская", "tunisian" to "Тунисская",
-        "filipino" to "Филиппинская", "kenyan" to "Кенийская", "norwegian" to "Норвежская", "australian" to "Австралийская"
-    )
-
-    private val CUISINE_FLAGS = mapOf(
-        "Русская" to "🇷🇺", "Корейская" to "🇰🇷", "Французская" to "🇫🇷", "Итальянская" to "🇮🇹",
-        "Японская" to "🇯🇵", "Грузинская" to "🇬🇪", "Мексиканская" to "🇲🇽", "Китайская" to "🇨🇳",
-        "Тайская" to "🇹🇭", "Индийская" to "🇮🇳", "Греческая" to "🇬🇷", "Испанская" to "🇪🇸",
-        "Турецкая" to "🇹🇷", "Вьетнамская" to "🇻🇳", "Марокканская" to "🇲🇦", "Американская" to "🇺🇸",
-        "Британская" to "🇬🇧", "Польская" to "🇵🇱", "Украинская" to "🇺🇦", "Хорватская" to "🇭🇷",
-        "Ирландская" to "🇮🇪", "Ямайская" to "🇯🇲", "Египетская" to "🇪🇬", "Голландская" to "🇳🇱",
-        "Португальская" to "🇵🇹", "Канадская" to "🇨🇦", "Малайзийская" to "🇲🇾", "Тунисская" to "🇹🇳",
-        "Филиппинская" to "🇵🇭", "Домашняя" to "🏠"
-    )
-
-    private val SPEECH_REPLACEMENTS = listOf(
-        Regex("(\\d+)\\s*-\\s*(\\d+)") to "$1 или $2",
-        Regex("(?i)\\bст\\.?\\s*л\\.?") to "столовых ложек",
-        Regex("(?i)\\bч\\.?\\s*л\\.?") to "чайных ложек",
-        Regex("(?i)(\\d+)\\s*г\\b\\.?") to "$1 граммов",
-        Regex("(?i)(\\d+)\\s*гр\\b\\.?") to "$1 граммов",
-        Regex("(?i)(\\d+)\\s*кг\\b\\.?") to "$1 килограммов",
-        Regex("(?i)(\\d+)\\s*мл\\b\\.?") to "$1 миллилитров",
-        Regex("(?i)(\\d+)\\s*л\\b\\.?") to "$1 литров",
-        Regex("(?i)(\\d+)\\s*шт\\.?") to "$1 штуки",
-        Regex("(?i)(\\d+)\\s*мин\\.?") to "$1 минут",
-        Regex("(?i)(\\d+)\\s*ч\\b\\.?") to "$1 час"
-    )
-
-    private val UNIT_PRE_REPLACEMENTS = listOf(
-        Regex("(?i)\\b(\\d+)\\s+1/2\\b") to "$1.5", Regex("(?i)\\b(\\d+)\\s+1/4\\b") to "$1.25",
-        Regex("(?i)\\b(\\d+)\\s+3/4\\b") to "$1.75", Regex("(?i)\\b(\\d+)\\s+1/3\\b") to "$1.3",
-        Regex("(?i)\\b(\\d+)\\s+2/3\\b") to "$1.7", Regex("(?i)\\b1/2\\b") to "0.5",
-        Regex("(?i)\\b1/4\\b") to "0.25", Regex("(?i)\\b3/4\\b") to "0.75",
-        Regex("(?i)\\b1/3\\b") to "0.3", Regex("(?i)\\b2/3\\b") to "0.7",
-        Regex("(?i)(\\d+)\\s*g\\b") to "$1 г", Regex("(?i)(\\d+)\\s*kg\\b") to "$1 кг",
-        Regex("(?i)(\\d+)\\s*ml\\b") to "$1 мл", Regex("(?i)(\\d+)\\s*oz\\b") to "$1 унц.",
-        Regex("(?i)(\\d+)\\s*lb(?:s)?\\b") to "$1 фунт.", Regex("(?i)\\btbsp(?:s)?\\b") to "ст.л.",
-        Regex("(?i)\\btblsp(?:s)?\\b") to "ст.л.", Regex("(?i)\\btablespoon(?:s)?\\b") to "ст.л.",
-        Regex("(?i)\\btsp(?:s)?\\b") to "ч.л.", Regex("(?i)\\bteaspoon(?:s)?\\b") to "ч.л."
-    )
-
-    private val CULINARY_DICTIONARY: List<Pair<Regex, String>> by lazy {
-        listOf(
-            "graham cracker crumbs" to "крошка песочного печенья", "graham crackers" to "песочное печенье", "graham cracker" to "песочное печенье",
-            "digestive biscuits" to "песочное печенье", "evaporated milk" to "концентрированное молоко", "condensed milk" to "сгущенное молоко",
-            "extra virgin olive oil" to "оливковое масло", "sunflower oil" to "подсолнечное масло", "vegetable oil" to "растительное масло",
-            "sesame seed oil" to "кунжутное масло", "sesame oil" to "кунжутное масло", "coconut oil" to "кокосовое масло", "olive oil" to "оливковое масло",
-            "unsalted butter" to "сливочное масло", "salted butter" to "сливочное масло", "melted butter" to "растопленное масло",
-            "chicken breast" to "куриная грудка", "chicken breasts" to "куриные грудки", "chicken thighs" to "куриные бедра", "chicken wings" to "куриные крылышки",
-            "chicken stock" to "куриный бульон", "chicken broth" to "куриный бульон", "beef stock" to "говяжий бульон", "vegetable stock" to "овощной бульон",
-            "minced beef" to "говяжий фарш", "ground beef" to "говяжий фарш", "minced pork" to "свиной фарш", "ground pork" to "свиной фарш",
-            "heavy cream" to "жирные сливки", "double cream" to "сливки", "single cream" to "сливки", "sour cream" to "сметана", "cream cheese" to "сливочный сыр",
-            "cheddar cheese" to "сыр Чеддер", "parmesan cheese" to "сыр Пармезан", "mozzarella cheese" to "сыр Моцарелла", "feta cheese" to "сыр Фета",
-            "spring onions" to "зеленый лук", "spring onion" to "зеленый лук", "green onions" to "зеленый лук", "red onion" to "красный лук",
-            "garlic cloves" to "зубчики чеснока", "garlic clove" to "зубчик чеснока", "cloves garlic" to "зубчика чеснока", "garlic powder" to "сушеный чеснок",
-            "cherry tomatoes" to "томаты черри", "chopped tomatoes" to "рубленые томаты", "tomato puree" to "томатное пюре", "tomato paste" to "томатная паста",
-            "tomato sauce" to "томатный соус", "soy sauce" to "соевый соус", "fish sauce" to "рыбный соус", "oyster sauce" to "устричный соус",
-            "worcestershire sauce" to "вустерский соус", "hot sauce" to "острый соус", "white wine vinegar" to "белый винный уксус", "apple cider vinegar" to "яблочный уксус",
-            "balsamic vinegar" to "бальзамический уксус", "rice vinegar" to "рисовый уксус", "lemon juice" to "лимонный сок", "lime juice" to "сок лайма",
-            "all-purpose flour" to "пшеничная мука", "plain flour" to "пшеничная мука", "self-raising flour" to "мука с разрыхлителем", "cornstarch" to "кукурузный крахмал",
-            "corn flour" to "кукурузный крахмал", "baking powder" to "разрыхлитель", "baking soda" to "сода", "bicarbonate of soda" to "сода",
-            "caster sugar" to "мелкий сахар", "brown sugar" to "коричневый сахар", "icing sugar" to "сахарная пудра", "powdered sugar" to "сахарная пудра",
-            "vanilla extract" to "ванильный экстракт", "black pepper" to "черный перец", "cayenne pepper" to "кайенский перец", "chili powder" to "порошок чили",
-            "bell pepper" to "болгарский перец", "sweet potatoes" to "батат", "bay leaf" to "лавровый лист", "bay leaves" to "лавровый лист",
-            "egg yolks" to "яичные желтки", "egg yolk" to "желток", "egg whites" to "яичные белки", "coconut milk" to "кокосовое молоко",
-            "bread crumbs" to "панировочные сухари", "breadcrumbs" to "панировочные сухари", "sesame seeds" to "кунжут", "peanut butter" to "арахисовая паста",
-            "to taste" to "по вкусу", "for garnish" to "для украшения", "to serve" to "для подачи", "finely chopped" to "мелко нарезанный", "thinly sliced" to "тонко нарезанный",
-            "preheat the oven" to "разогрейте духовку", "medium heat" to "средний огонь", "golden brown" to "золотистая корочка", "frying pan" to "сковорода",
-            "chicken" to "курица", "beef" to "говядина", "pork" to "свинина", "lamb" to "баранина", "turkey" to "индейка", "duck" to "утка", "bacon" to "бекон",
-            "sausage" to "колбаски", "ham" to "ветчина", "meat" to "мясо", "mince" to "фарш", "salmon" to "лосось", "tuna" to "тунец", "cod" to "треска", "fish" to "рыба",
-            "shrimp" to "креветки", "prawns" to "креветки", "prawn" to "креветка", "seafood" to "морепродукты", "potatoes" to "картофель", "potato" to "картофель",
-            "carrots" to "морковь", "carrot" to "морковь", "onions" to "лук", "onion" to "лук", "shallots" to "лук-шалот", "leek" to "лук-порей",
-            "garlic" to "чеснок", "ginger" to "имбирь", "tomatoes" to "томаты", "tomato" to "томат", "cucumber" to "огурец", "cabbage" to "капуста",
-            "broccoli" to "брокколи", "cauliflower" to "цветная капуста", "spinach" to "шпинат", "lettuce" to "салат", "celery" to "сельдерей",
-            "zucchini" to "кабачок", "courgette" to "кабачок", "eggplant" to "баклажан", "aubergine" to "баклажан", "pumpkin" to "тыква",
-            "mushrooms" to "грибы", "mushroom" to "грибы", "peas" to "горошек", "beans" to "фасоль", "lentils" to "чечевица", "chickpeas" to "нут", "corn" to "кукуруза",
-            "avocado" to "авокадо", "olives" to "оливки", "beetroot" to "свекла", "peppers" to "перец", "parsley" to "петрушка", "cilantro" to "кинза",
-            "coriander" to "кориандр", "dill" to "укроп", "basil" to "базилик", "mint" to "мята", "rosemary" to "розмарин", "thyme" to "тимьян", "oregano" to "орегано",
-            "paprika" to "паприка", "cumin" to "зира", "turmeric" to "куркума", "cinnamon" to "корица", "nutmeg" to "мускатный орех", "cloves" to "зубчика",
-            "clove" to "зубчик", "cardamom" to "кардамон", "vanilla" to "ваниль", "curry" to "карри", "chili" to "чили", "chilli" to "чили", "mustard" to "горчица",
-            "mayonnaise" to "майонез", "ketchup" to "кетчуп", "vinegar" to "уксус", "sauce" to "соус", "paste" to "паста", "stock" to "бульон", "broth" to "бульон",
-            "water" to "вода", "milk" to "молоко", "cream" to "сливки", "butter" to "сливочное масло", "yogurt" to "йогурт", "cheese" to "сыр", "parmesan" to "Пармезан",
-            "mozzarella" to "Моцарелла", "cheddar" to "Чеддер", "ricotta" to "Рикотта", "mascarpone" to "Маскарпоне", "tofu" to "сыр тофу", "eggs" to "яйца", "egg" to "яйцо",
-            "yolk" to "желток", "yolks" to "желтки", "flour" to "мука", "sugar" to "сахар", "salt" to "соль", "pepper" to "перец", "honey" to "мёд", "syrup" to "сироп",
-            "chocolate" to "шоколад", "cocoa" to "какао", "yeast" to "дрожжи", "starch" to "крахмал", "rice" to "рис", "pasta" to "паста", "spaghetti" to "спагетти",
-            "noodles" to "лапша", "noodle" to "лапша", "lasagne" to "лазанья", "oats" to "овсянка", "bread" to "хлеб", "baguette" to "багет", "tortillas" to "тортильи",
-            "dough" to "тесто", "pastry" to "тесто", "crumbs" to "крошка", "apple" to "яблоко", "apples" to "яблоки", "banana" to "банан", "lemon" to "лимон",
-            "lime" to "лайм", "orange" to "апельсин", "strawberries" to "клубника", "berries" to "ягоды", "raisins" to "изюм", "walnuts" to "грецкие орехи",
-            "almonds" to "миндаль", "peanuts" to "арахис", "cashews" to "кешью", "nuts" to "орехи", "coconut" to "кокос", "oil" to "масло",
-            "cups" to "стакана", "cup" to "стакан", "tbsp" to "ст.л.", "tbs" to "ст.л.", "tsp" to "ч.л.", "oz" to "унц.", "lb" to "фунт.", "grams" to "г", "gram" to "г",
-            "pinch" to "щепотка", "dash" to "щепотка", "handful" to "горсть", "bunch" to "пучок", "slice" to "ломтик", "slices" to "ломтика", "piece" to "кусочек",
-            "pieces" to "кусочка", "can" to "банка", "tin" to "банка", "packet" to "уп.", "pkg" to "уп.", "fillet" to "филе", "breast" to "грудка", "thighs" to "бедра",
-            "large" to "крупный", "medium" to "средний", "small" to "мелкий", "fresh" to "свежий", "dried" to "сушеный", "frozen" to "замороженный", "smoked" to "копченый",
-            "sweet" to "сладкий", "hot" to "острый", "spicy" to "пряный", "warm" to "теплый", "cold" to "холодный", "boiling" to "кипящий", "melted" to "растопленный",
-            "chopped" to "нарезанный", "diced" to "кубиками", "sliced" to "ломтиками", "minced" to "измельченный", "grated" to "тертый", "crushed" to "раздавленный",
-            "peeled" to "очищенный", "beaten" to "взбитый", "mashed" to "размятый", "roasted" to "запеченный", "fried" to "обжаренный", "boiled" to "отварной",
-            "cooked" to "готовый", "whole" to "целый", "halved" to "пополам", "finely" to "мелко", "optional" to "по желанию",
-            "preheat" to "разогрейте", "heat" to "нагрейте", "boil" to "варите", "simmer" to "томите", "fry" to "обжарьте", "saute" to "обжарьте", "bake" to "выпекайте",
-            "roast" to "запекайте", "mix" to "смешайте", "stir" to "перемешайте", "whisk" to "взбейте", "beat" to "взбейте", "chop" to "нарежьте", "peel" to "очистите",
-            "grate" to "натрите", "pour" to "влейте", "add" to "добавьте", "place" to "положите", "put" to "положите", "remove" to "выньте", "drain" to "слейте",
-            "cover" to "накройте", "season" to "приправьте", "sprinkle" to "посыпьте", "garnish" to "украсьте", "serve" to "подавайте", "cook" to "готовьте",
-            "leave" to "оставьте", "cool" to "остудите", "oven" to "духовка", "pan" to "сковорода", "pot" to "кастрюля", "bowl" to "миска", "plate" to "тарелка",
-            "minutes" to "минут", "minute" to "минуту", "mins" to "минут", "min" to "мин", "hours" to "часа", "hour" to "час", "seconds" to "секунд", "until" to "до",
-            "tender" to "мягкости", "golden" to "золотистости", "with" to "с", "and" to "и", "or" to "или", "in" to "в", "on" to "на", "for" to "в течение", "then" to "затем"
-        ).sortedByDescending { it.first.length }
-            .map { (en, ru) -> Regex("(?i)(?<![a-zA-Z])${Regex.escape(en)}(?![a-zA-Z])") to ru }
-    }
-
-    fun parseCookingMinutesOnce(cookingTime: String): Int {
-        val lower = cookingTime.lowercase()
-        val hours = HOURS_REGEX.find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-        val mins = MINS_REGEX.find(lower)?.groupValues?.get(1)?.toIntOrNull()
-            ?: ANY_DIGIT_REGEX.find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 30
-        return hours * 60 + mins
-    }
-
-    fun buildChefTip(category: String, cuisine: String): String = when (category) {
-        "Супы" -> "Совет Шефа: дайте супу настояться под крышкой 10 минут после выключения плиты — вкус станет глубже."
-        "Выпечка", "Что-то к чаю" -> "Совет Шефа: все ингредиенты для теста должны быть комнатной температуры для идеальной пышности."
-        "Салаты" -> "Совет Шефа: заправляйте салат непосредственно перед подачей, чтобы сохранить хрустящую текстуру."
-        "Паста и пицца" -> "Совет Шефа: всегда оставляйте 2–3 ложки воды от варки пасты — она сделает соус шелковистым."
-        else -> "Совет Шефа ($cuisine кухня): не перегружайте сковороду при обжарке, чтобы получить румяную корочку."
-    }
-
-    fun buildDishPhotoUrls(dishNameForPrompt: String, seedBase: Int, primaryThumbUrl: String? = null): List<String> {
-        val cleanName = dishNameForPrompt.replace(Regex("[^a-zA-Zа-яА-ЯёЁ0-9\\s]"), " ").trim()
-        val encoded = URLEncoder.encode(cleanName.ifEmpty { "cooked dish" }, "UTF-8").replace("+", "%20")
-        val angle1 = "https://image.pollinations.ai/prompt/$encoded%20cooked%20dish%20plated%20restaurant%20food%20photography?width=600&height=400&nologo=true&seed=${seedBase + 11}"
-        val angle2 = "https://image.pollinations.ai/prompt/$encoded%20delicious%20prepared%20meal%20overhead%20closeup%20serving?width=600&height=400&nologo=true&seed=${seedBase + 55}"
-        val angle3 = "https://image.pollinations.ai/prompt/$encoded%20traditional%20cooked%20food%20on%20table%20gourmet?width=600&height=400&nologo=true&seed=${seedBase + 99}"
-        return if (!primaryThumbUrl.isNullOrBlank()) listOf(primaryThumbUrl, angle1, angle2) else listOf(angle1, angle2, angle3)
-    }
-
-    fun buildDishDescription(title: String, cuisine: String, category: String, ingredients: List<String>): String {
-        val coreIngs = ingredients.take(4)
-            .map { normalizeAndTranslateCulinary(it.substringBefore("—").substringBefore("-")).trim().lowercase() }
-            .filter { it.isNotBlank() }.joinToString(", ")
-        val categoryFlavor = when (category) {
-            "Супы", "Супы и закуски" -> "Ароматное первое блюдо с насыщенным бульоном и согревающим вкусом"
-            "Каши и завтраки" -> "Сытное и нежное утреннее блюдо для питательного завтрака"
-            "Выпечка" -> "Румяная домашняя выпечка с мягкой текстурой и аппетитной корочкой"
-            "Что-то к чаю" -> "Нежный десерт к чаю или кофе с приятной сладостью и ароматом"
-            "Салаты", "Салаты и гарниры" -> "Свежее сбалансированное блюдо с ярким сочетанием текстур"
-            "Паста и пицца" -> "Классическое блюдо с насыщенным соусом и аппетитной подачей"
-            else -> "Сытное и ароматное основное блюдо для обеда или ужина"
-        }
-        val cuisineNote = if (cuisine != "Мировая" && cuisine != "Все") "традиции кухни «$cuisine»" else "мировой кулинарной коллекции"
-        return if (coreIngs.isNotEmpty()) "$categoryFlavor из $cuisineNote. В основе рецепта — $coreIngs." else "$categoryFlavor из $cuisineNote."
-    }
-
-    fun resolveRealCuisine(rawArea: String?, dishTitle: String, selectedFilterCuisine: String): String {
-        val cleanArea = rawArea?.trim()?.lowercase() ?: ""
-        if (cleanArea.isNotEmpty() && cleanArea != "unknown") {
-            AREA_TO_RUSSIAN_CUISINE[cleanArea]?.let { return it }
-            if (!hasLatin(cleanArea)) {
-                val cap = cleanArea.replaceFirstChar { it.uppercase() }
-                if (cap != "Все" && cap != "Любая" && cap != "Разные") return cap
-            }
-        }
-        val lowerTitle = dishTitle.lowercase()
-        when {
-            lowerTitle.contains("кимчи") || lowerTitle.contains("корейск") || lowerTitle.contains("пибимпап") || lowerTitle.contains("токпокки") || lowerTitle.contains("яннём") || lowerTitle.contains("пулькоги") -> return "Корейская"
-            lowerTitle.contains("борщ") || lowerTitle.contains("сырник") || lowerTitle.contains("строганов") || lowerTitle.contains("пельмен") || lowerTitle.contains("оливье") -> return "Русская"
-            lowerTitle.contains("рамен") || lowerTitle.contains("терияки") || lowerTitle.contains("суши") || lowerTitle.contains("удон") || lowerTitle.contains("японск") -> return "Японская"
-            lowerTitle.contains("паста") || lowerTitle.contains("карбонара") || lowerTitle.contains("пицца") || lowerTitle.contains("лазанья") || lowerTitle.contains("тирамису") -> return "Итальянская"
-            lowerTitle.contains("круассан") || lowerTitle.contains("гратен") || lowerTitle.contains("жюльен") || lowerTitle.contains("жульен") || lowerTitle.contains("французск") -> return "Французская"
-            lowerTitle.contains("хачапури") || lowerTitle.contains("чкмерули") || lowerTitle.contains("хинкали") || lowerTitle.contains("харчо") || lowerTitle.contains("грузинск") -> return "Грузинская"
-            lowerTitle.contains("кесадилья") || lowerTitle.contains("тако") || lowerTitle.contains("буррито") || lowerTitle.contains("гуакамоле") -> return "Мексиканская"
-            lowerTitle.contains("том ям") || lowerTitle.contains("пад тай") || lowerTitle.contains("тайск") -> return "Тайская"
-            lowerTitle.contains("карри") || lowerTitle.contains("масала") || lowerTitle.contains("индийск") -> return "Индийская"
-            lowerTitle.contains("вок") || lowerTitle.contains("кисло-сладк") || lowerTitle.contains("китайск") -> return "Китайская"
-        }
-        return if (selectedFilterCuisine != "Все") selectedFilterCuisine else "Мировая"
-    }
-
-    fun resolveRealCategory(rawCategory: String?, dishTitle: String, selectedFilterCategory: String): String {
-        if (selectedFilterCategory != "Все") return selectedFilterCategory
-        val lowerTitle = dishTitle.lowercase()
-        if (lowerTitle.contains("суп") || lowerTitle.contains("борщ") || lowerTitle.contains("рамен") || lowerTitle.contains("бульон") || lowerTitle.contains("том ям")) return "Супы"
-        if (lowerTitle.contains("салат") || lowerTitle.contains("цезарь") || lowerTitle.contains("оливье")) return "Салаты"
-        val cleanCat = rawCategory?.trim()?.lowercase() ?: ""
-        return when (cleanCat) {
-            "starter" -> "Супы"
-            "breakfast" -> "Каши и завтраки"
-            "dessert" -> "Что-то к чаю"
-            "pasta" -> "Паста и пицца"
-            "side" -> "Салаты"
-            "beef", "chicken", "pork", "lamb", "seafood", "goat", "miscellaneous", "vegan", "vegetarian" -> "Вторые блюда"
-            else -> if (!hasLatin(cleanCat) && cleanCat.isNotEmpty()) cleanCat.replaceFirstChar { it.uppercase() } else "Вторые блюда"
-        }
-    }
-
-    fun formatCuisineWithFlag(cuisine: String): String = "${CUISINE_FLAGS[cuisine] ?: "🌍"} $cuisine"
-
-    fun hasLatin(text: String): Boolean = LATIN_REGEX.containsMatchIn(text)
-
-    fun normalizeAndTranslateCulinary(text: String): String {
-        var res = text.trim()
-        if (res.isEmpty()) return res
-        for ((regex, replacement) in UNIT_PRE_REPLACEMENTS) res = regex.replace(res, replacement)
-        if (!hasLatin(res)) return res
-        for ((regex, ru) in CULINARY_DICTIONARY) {
-            res = regex.replace(res, ru)
-            if (!hasLatin(res)) break
-        }
-        return res.replace(Regex("(?i)\\b(the|a|an|of|to)\\b"), " ").replace(Regex("\\s{2,}"), " ").trim()
-    }
-
-    fun computeFridgeStems(fridgeItems: List<String>): Set<String> {
-        if (fridgeItems.isEmpty()) return emptySet()
-        return fridgeItems.mapNotNull { item ->
-            val clean = item.trim().lowercase()
-            if (clean.isEmpty()) null else when {
-                clean.length >= 5 -> clean.dropLast(2)
-                clean.length == 4 -> clean.dropLast(1)
-                else -> clean
-            }
-        }.toSet()
-    }
-
-    fun isIngredientMatchingStems(recipeIngredient: String, fridgeStems: Set<String>): Boolean {
-        if (fridgeStems.isEmpty()) return false
-        val lowerIng = recipeIngredient.lowercase()
-        return fridgeStems.any { lowerIng.contains(it) }
-    }
-
-    fun scaleIngredientAmount(ingredient: String, portions: Int, basePortions: Int = 2): String {
-        if (portions == basePortions) return ingredient
-        val ratio = portions.toDouble() / basePortions.toDouble()
-        return NUMBER_REGEX.replace(ingredient) { matchResult ->
-            val num = matchResult.value.replace(",", ".").toDoubleOrNull() ?: return@replace matchResult.value
-            val scaled = num * ratio
-            if (scaled >= 10 || scaled % 1.0 == 0.0) scaled.roundToInt().toString()
-            else String.format(Locale.US, "%.1f", scaled).replace(".0", "")
-        }
-    }
-
-    fun extractTimerInfo(stepText: String): ParsedTimer? {
-        val match = TIMER_REGEX.find(stepText) ?: return null
-        val value = match.groupValues[1].toIntOrNull() ?: return null
-        val unit = match.groupValues[2].lowercase()
-        val seconds = when {
-            unit.startsWith("час") -> value * 3600
-            unit.startsWith("мин") -> value * 60
-            unit.startsWith("сек") -> value
-            else -> value * 60
-        }
-        return ParsedTimer(seconds, match.value)
-    }
-
-    fun humanizeCookingText(text: String): String {
-        var result = text
-        for ((regex, replacement) in SPEECH_REPLACEMENTS) result = regex.replace(result, replacement)
-        return result.replace("°C", " градусов Цельсия").replace("°", " градусов").replace(" - ", " — ")
-    }
-
-    fun splitSentences(text: String): List<String> = text.split(SENTENCE_SPLIT_REGEX).map { it.trim() }.filter { it.isNotBlank() }
-
-    fun ensureValidInstructions(rawSteps: List<String>, title: String, ingredients: List<String>): List<String> {
-        val cleaned = rawSteps.flatMap { it.split(STEP_SPLIT_REGEX) }
-            .map { normalizeAndTranslateCulinary(it.replace(STEP_PREFIX_REGEX, "").trim()) }
-            .filter { it.length > 6 && !it.lowercase().startsWith("приятного аппетита") }
-        if (cleaned.size >= 2) return cleaned
-        val mainIngs = ingredients.take(3).joinToString(", ") { it.substringBefore("-").substringBefore("—").trim() }
-        return listOf(
-            "Подготовьте все ингредиенты для блюда «$title»: промойте и нарежьте основные продукты ($mainIngs).",
-            "Прогрейте сковороду или кастрюлю, соедините подготовленные компоненты и готовьте на среднем огне в течение 12 минут, периодически помешивая.",
-            "Добавьте специи, соль и соус по вкусу, убавьте огонь и томите под крышкой еще 15 минут до полной готовности.",
-            "Дайте готовому блюду настояться 5 минут перед подачей к столу."
-        )
-    }
-
-    fun parseVoiceCommand(spokenText: String, currentCuisine: String, currentCategory: String): Triple<String, String, List<String>> {
-        val lower = spokenText.lowercase()
-        var newCuisine = currentCuisine
-        var newCategory = currentCategory
-        val cuisineRoots = mapOf(
-            "русск" to "Русская", "корейск" to "Корейская", "французск" to "Французская", "итальянск" to "Итальянская",
-            "японск" to "Японская", "грузинск" to "Грузинская", "мексиканск" to "Мексиканская", "китайск" to "Китайская", "тайск" to "Тайская", "индийск" to "Индийская"
-        )
-        cuisineRoots.forEach { (root, name) -> if (lower.contains(root)) newCuisine = name }
-        val categoryRoots = mapOf(
-            "суп" to "Супы", "бульон" to "Супы", "каш" to "Каши и завтраки", "завтрак" to "Каши и завтраки",
-            "выпечк" to "Выпечка", "пирог" to "Выпечка", "к чаю" to "Что-то к чаю", "десерт" to "Что-то к чаю",
-            "сладк" to "Что-то к чаю", "салат" to "Салаты", "паст" to "Паста и пицца", "пицц" to "Паста и пицца",
-            "второе" to "Вторые блюда", "ужин" to "Вторые блюда"
-        )
-        categoryRoots.forEach { (root, name) -> if (lower.contains(root)) newCategory = name }
-        val stopWords = setOf("приготовь", "приготовить", "сделай", "подбери", "найди", "покажи", "хочу", "блюдо", "рецепт", "из", "у", "меня", "есть", "в", "холодильнике", "дома", "или", "мне", "пожалуйста", "на", "обед", "ужин", "завтрак", "суп", "салат")
-        val normalizeMap = mapOf(
-            "курицы" to "Курица", "курицу" to "Курица", "курочки" to "Курица", "картошки" to "Картофель", "картошка" to "Картофель",
-            "сыра" to "Сыр", "яиц" to "Яйца", "яйцо" to "Яйца", "молока" to "Молоко", "риса" to "Рис", "грибов" to "Грибы",
-            "помидоров" to "Томаты", "помидоры" to "Томаты", "фарша" to "Фарш", "творога" to "Творог", "капусты" to "Капуста", "говядины" to "Говядина", "свинины" to "Свинина"
-        )
-        val extracted = lower.replace(NON_WORD_REGEX, " ").split(WHITESPACE_REGEX).map { it.trim() }
-            .filter { it.length > 2 && !stopWords.contains(it) }
-            .filter { w -> cuisineRoots.keys.none { w.startsWith(it) } }
-            .map { w -> normalizeMap[w] ?: w.replaceFirstChar { it.uppercase() } }.distinct()
-        return Triple(newCuisine, newCategory, extracted)
-    }
-
-    fun playAlarmSound() {
-        try {
-            val toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
-            toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 1500)
-            Handler(Looper.getMainLooper()).postDelayed({ try { toneGen.release() } catch (_: Exception) {} }, 1600L)
-        } catch (_: Exception) {}
-    }
-}
-// =========================================================================
-// ХРАНИЛИЩЕ И ГОЛОСОВОЙ ДВИЖОК (С ЗАЩИТОЙ ОТ СБОЕВ ПРИ СТАРТЕ)
+// ХРАНИЛИЩЕ И ГОЛОСОВОЙ ДВИЖОК
 // =========================================================================
 class RecipeStorage(context: Context) {
-    private val prefs = context.getSharedPreferences("chef_app_v10_storage", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("chef_app_v11_storage", Context.MODE_PRIVATE)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun clearCorruptedStorage() {
+        try { prefs.edit().clear().apply() } catch (_: Exception) {}
+    }
 
     fun preloadTranslationCache() {
         try {
@@ -780,14 +24,17 @@ class RecipeStorage(context: Context) {
     } catch (_: Exception) { systemDefault }
 
     fun saveDarkTheme(enabled: Boolean) = prefs.edit().putBoolean("dark_mode", enabled).apply()
-    fun loadGitHubRepo(): String = prefs.getString("github_repo_path", DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
+    fun loadGitHubRepo(): String = try {
+        prefs.getString("github_repo_path", DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
+    } catch (_: Exception) { DEFAULT_GITHUB_REPO }
+
     fun saveGitHubRepo(repo: String) = prefs.edit().putString("github_repo_path", repo.trim()).apply()
     fun loadStringSet(key: String): List<String> = try {
         prefs.getStringSet(key, emptySet())?.toList() ?: emptyList()
     } catch (_: Exception) { emptyList() }
 
     fun loadRecipeList(key: String): List<Recipe> {
-        val raw = prefs.getString(key, null) ?: return emptyList()
+        val raw = try { prefs.getString(key, null) } catch (_: Exception) { null } ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             List(arr.length()) { Recipe.fromJson(arr.getJSONObject(it)) }
@@ -923,12 +170,28 @@ class SpeechManager(private val context: Context, private val onSpeakingStateCha
 }
 
 // =========================================================================
-// ACTIVITY И UI ЭКРАНЫ (ВЕРСИЯ v1.2 ⚡)
+// ACTIVITY С ПЕРЕХВАТЧИКОМ СБОЕВ (CRASH GUARD)
 // =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        handleInstallCommitIntent(intent)
+
+        var startupCrashReport by mutableStateOf<String?>(null)
+
+        // Перехватываем любое необработанное исключение, чтобы показать его на экране вместо вылета
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            val sw = StringWriter()
+            throwable.printStackTrace(PrintWriter(sw))
+            val trace = sw.toString()
+            Handler(Looper.getMainLooper()).post {
+                startupCrashReport = "${throwable.javaClass.simpleName}: ${throwable.localizedMessage}\n\n$trace"
+            }
+        }
+
+        try {
+            handleInstallCommitIntent(intent)
+        } catch (_: Exception) {}
+
         setContent {
             val context = LocalContext.current
             val storage = remember { RecipeStorage(context) }
@@ -937,11 +200,27 @@ class MainActivity : ComponentActivity() {
 
             MaterialTheme(colorScheme = if (isDarkTheme) DarkCulinaryColorScheme else LightCulinaryColorScheme) {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    RecipeAppScreen(
-                        storage = storage,
-                        isDarkTheme = isDarkTheme,
-                        onToggleDarkTheme = { isDarkTheme = !isDarkTheme; storage.saveDarkTheme(isDarkTheme) }
-                    )
+                    if (startupCrashReport != null) {
+                        Column(
+                            modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text("⚠️ Перехвачена ошибка запуска:", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error)
+                            Button(onClick = {
+                                storage.clearCorruptedStorage()
+                                startupCrashReport = null
+                            }) {
+                                Text("🔄 Сбросить кэш и продолжить")
+                            }
+                            Text(startupCrashReport ?: "", fontSize = 11.sp)
+                        }
+                    } else {
+                        RecipeAppScreen(
+                            storage = storage,
+                            isDarkTheme = isDarkTheme,
+                            onToggleDarkTheme = { isDarkTheme = !isDarkTheme; storage.saveDarkTheme(isDarkTheme) }
+                        )
+                    }
                 }
             }
         }
@@ -949,7 +228,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handleInstallCommitIntent(intent)
+        try { handleInstallCommitIntent(intent) } catch (_: Exception) {}
     }
 
     private fun handleInstallCommitIntent(intent: Intent?) {
@@ -1288,7 +567,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
-        // Компактная шапка (42dp) с изумрудным бейджем v1.2 ⚡
+        // Компактная шапка (42dp) с изумрудным бейджем v1.3 ⚡
         Row(
             modifier = Modifier.fillMaxWidth().height(42.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1579,7 +858,8 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                             }
                         }
 
-                        itemsIndexed(items = displayedRecipes, key = { _, item -> item.id }) { index, recipe ->
+                        // ИСПРАВЛЕНО: Уникальный составной ключ исключает сбой LazyColumn при дубликатах!
+                        itemsIndexed(items = displayedRecipes, key = { idx, item -> "${item.id}_$idx" }) { index, recipe ->
                             val isFav = favoriteIdsSet.contains(recipe.id)
                             RecipeCard(
                                 index = index + 1, recipe = recipe, isDarkTheme = isDarkTheme,
@@ -1610,7 +890,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                         }
 
                         if (!showOnlyFavorites && searchQuery.isBlank()) {
-                            item {
+                            item(key = "load_more_footer") {
                                 OutlinedButton(
                                     onClick = { loadRecipes(targetCount = committedLimitCount, collapseHeader = true, forceNewBatch = true) },
                                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
@@ -1757,7 +1037,7 @@ fun ShoppingListView(shoppingItems: MutableList<String>, checkedItems: MutableLi
             Text("Куплено: ${checkedItems.size} из ${shoppingItems.size}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
             Spacer(modifier = Modifier.height(6.dp))
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(shoppingItems, key = { it }) { item ->
+                itemsIndexed(shoppingItems, key = { idx, it -> "${it}_$idx" }) { _, item ->
                     val isChecked = checkedItems.contains(item)
                     Card(
                         shape = RoundedCornerShape(12.dp),
@@ -2132,7 +1412,7 @@ fun StepTimerWidget(timerKey: String, timerInfo: ParsedTimer, isDarkTheme: Boole
 }
 
 // =========================================================================
-// РЕПОЗИТОРИЙ ДАННЫХ С БЕЗОПАСНОЙ LAZY-ИНИЦИАЛИЗАЦИЕЙ БАЗЫ
+// РЕПОЗИТОРИЙ ДАННЫХ И ЛОКАЛЬНАЯ БАЗА БЛЮД
 // =========================================================================
 object RecipeRepository {
     private val translationSemaphore = Semaphore(4)
@@ -2473,7 +1753,6 @@ object RecipeRepository {
         return exactMatches.take(count)
     }
 
-    // ИСПРАВЛЕНО: Ленивая инициализация (by lazy) гарантирует отсутствие NullPointerException при запуске!
     private val CURATED_LOCAL_RECIPES: List<Recipe> by lazy {
         listOf(
             Recipe("loc_borscht", "Классический борщ с говядиной и сметаной", "Традиционный густой суп насыщенного рубинового цвета на наваристом говяжьем бульоне со свеклой, свежей капустой и чесноком.", "Русская", "Супы", "1 ч 20 мин", "Средне", 135, listOf("https://www.themealdb.com/images/media/meals/vvstvq1487342592.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"), listOf("Говядина на кости - 500 г", "Свекла - 2 шт.", "Капуста белокочанная - 300 г", "Картофель - 4 шт.", "Томатная паста - 2 ст.л.", "Сметана - 3 ст.л."), listOf("Сварите наваристый бульон из говядины в течение 45 минут, затем достаньте мясо и нарежьте кусочками.", "В кипящий бульон отправьте нарезанный кубиками картофель и нашинкованную капусту, варите 15 минут.", "Обжарьте на сковороде тертую свеклу, морковь и лук с томатной пастой в течение 8 минут.", "Соедините зажарку с супом, добавьте чеснок и лавровый лист, томите под крышкой еще 10 минут.")),
