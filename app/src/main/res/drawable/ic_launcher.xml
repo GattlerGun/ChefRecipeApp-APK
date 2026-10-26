@@ -4,64 +4,21 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-
-    <!-- Глубокий терракотово-рубиновый фон -->
     <path
         android:fillColor="#BF360C"
         android:pathData="M0,0h108v108h-108z" />
-
-    <!-- Внешнее теплое свечение -->
-    <path
-        android:fillColor="#D84315"
-        android:pathData="M54,54m-44,0a44,44 0,1 1,88 0a44,44 0,1 1,-88 0" />
-
-    <!-- Внутренний медальон -->
     <path
         android:fillColor="#FF5722"
-        android:pathData="M54,54m-37,0a37,37 0,1 1,74 0a37,37 0,1 1,-74 0" />
-
-    <!-- Тень под колпаком и кастрюлей -->
-    <path
-        android:fillColor="#9A0007"
-        android:fillAlpha="0.35"
-        android:pathData="M31,66 L81,66 L77,86 C76,91 70,95 63,95 L47,95 C40,95 34,91 33,86 Z" />
-
-    <!-- Пышный колпак Шеф-Повара -->
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0" />
     <path
         android:fillColor="#FFFFFF"
         android:pathData="M36,43 C29,43 25,38 25,32 C25,26 30,21 36,21 C39,15 46,11 54,11 C62,11 69,15 72,21 C78,21 83,26 83,32 C83,38 79,43 72,43 L70,51 L38,51 Z" />
-
-    <!-- Складки на колпаке для объема -->
-    <path
-        android:fillColor="#E0E0E0"
-        android:pathData="M45,24h2v22h-2z M53,21h2v25h-2z M61,24h2v22h-2z" />
-
-    <!-- Золотая лента с ободком колпака -->
     <path
         android:fillColor="#FFB300"
         android:pathData="M38,50h32v5h-32z" />
-
-    <!-- Корпус кастрюли -->
     <path
         android:fillColor="#FFF8E1"
         android:pathData="M29,63 L79,63 L75,83 C74,89 68,93 61,93 L47,93 C40,93 34,89 33,83 Z" />
-
-    <!-- Блик на кастрюле -->
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M35,66 L41,66 L43,87 L38,87 Z" />
-
-    <!-- Ручки кастрюли -->
-    <path
-        android:fillColor="#FFB300"
-        android:pathData="M22,65 C22,63 24,63 26,63 L29,63 L29,69 L25,69 C23,69 22,67 22,65 Z M79,63 L82,63 C84,63 86,63 86,65 C86,67 85,69 83,69 L79,69 Z" />
-
-    <!-- Волны горячего пара / аромата -->
-    <path
-        android:fillColor="#FFE082"
-        android:pathData="M44,57 C44,55 47,55 47,57 C47,59 44,59 44,61 L46,61 C46,59 49,59 49,57 C49,54 44,54 44,57 Z M59,57 C59,55 62,55 62,57 C62,59 59,59 59,61 L61,61 C61,59 64,59 64,57 C64,54 59,54 59,57 Z" />
-
-    <!-- Золотая кулинарная звезда в центре кастрюли -->
     <path
         android:fillColor="#FF6F00"
         android:pathData="M54,68 L56.5,73.5 L62.5,74.2 L58,78.2 L59.2,84 L54,81 L48.8,84 L50,78.2 L45.5,74.2 L51.5,73.5 Z" />
