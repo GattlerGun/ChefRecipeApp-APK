@@ -3,14 +3,10 @@ package com.example.recipeapp
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.ActivityNotFoundException
-import android.content.ContentProvider
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
-import android.content.pm.PackageManager
-import android.database.Cursor
-import android.database.MatrixCursor
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -21,15 +17,12 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
-import android.provider.OpenableColumns
 import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
-import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -93,7 +86,6 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Collections
 import java.util.Date
@@ -104,97 +96,30 @@ import kotlin.math.roundToInt
 import kotlin.random.Random
 
 private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
-private const val APK_PROVIDER_AUTHORITY = "com.example.recipeapp.apkprovider"
 private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
-private const val CURRENT_APP_VERSION = "v1.2"
-private const val WHATS_NEW_TEXT = "• Полноценное системное окно установки APK с полоской прогресса\n• Проверка совпадения ключа подписи (SHA-256) прямо в диалоге\n• Кнопка «🎲 Случайное блюдо» и защита от гаснущего экрана"
 
-// =========================================================================
-// ВСТРОЕННЫЙ CONTENT PROVIDER ДЛЯ НАТИВНОГО УСТАНОВЩИКА ANDROID (БЕЗ XML)
-// =========================================================================
-class ApkFileProvider : ContentProvider() {
-    override fun onCreate(): Boolean = true
-
-    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
-        val ctx = context ?: return null
-        val apkFile = File(ctx.externalCacheDir ?: ctx.cacheDir, "ChefRecipeApp_update.apk")
-        if (!apkFile.exists()) return null
-        return ParcelFileDescriptor.open(apkFile, ParcelFileDescriptor.MODE_READ_ONLY)
-    }
-
-    override fun getType(uri: Uri): String = "application/vnd.android.package-archive"
-
-    override fun query(
-        uri: Uri,
-        projection: Array<out String>?,
-        selection: String?,
-        selectionArgs: Array<out String>?,
-        sortOrder: String?
-    ): Cursor? {
-        val ctx = context ?: return null
-        val apkFile = File(ctx.externalCacheDir ?: ctx.cacheDir, "ChefRecipeApp_update.apk")
-        val cols = projection ?: arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
-        val matrix = MatrixCursor(cols, 1)
-        val row = matrix.newRow()
-        for (col in cols) {
-            when (col) {
-                OpenableColumns.DISPLAY_NAME -> row.add("ChefRecipeApp_update.apk")
-                OpenableColumns.SIZE -> row.add(apkFile.length())
-                else -> row.add(null)
-            }
-        }
-        return matrix
-    }
-
-    override fun insert(uri: Uri, values: ContentValues?): Uri? = null
-    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
-    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
-}
-
-// =========================================================================
-// 1. ТЕМА И ЦВЕТОВЫЕ ПАЛИТРЫ
-// =========================================================================
 private val LightCulinaryColorScheme = lightColorScheme(
-    primary = Color(0xFFD84315),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFFFCCBC),
-    onPrimaryContainer = Color(0xFF3E2723),
-    secondary = Color(0xFFEF6C00),
-    onSecondary = Color.White,
-    secondaryContainer = Color(0xFFFFE0B2),
-    onSecondaryContainer = Color(0xFF4E342E),
-    tertiary = Color(0xFF2E7D32),
-    onTertiary = Color.White,
-    background = Color(0xFFFFFBF8),
-    onBackground = Color(0xFF1C1B1F),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF1C1B1F),
-    surfaceVariant = Color(0xFFF5EBE6),
-    onSurfaceVariant = Color(0xFF49454F)
+    primary = Color(0xFFD84315), onPrimary = Color.White,
+    primaryContainer = Color(0xFFFFCCBC), onPrimaryContainer = Color(0xFF3E2723),
+    secondary = Color(0xFFEF6C00), onSecondary = Color.White,
+    secondaryContainer = Color(0xFFFFE0B2), onSecondaryContainer = Color(0xFF4E342E),
+    tertiary = Color(0xFF2E7D32), onTertiary = Color.White,
+    background = Color(0xFFFFFBF8), onBackground = Color(0xFF1C1B1F),
+    surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1C1B1F),
+    surfaceVariant = Color(0xFFF5EBE6), onSurfaceVariant = Color(0xFF49454F)
 )
 
 private val DarkCulinaryColorScheme = darkColorScheme(
-    primary = Color(0xFFFF8A65),
-    onPrimary = Color(0xFF3E2723),
-    primaryContainer = Color(0xFF5D4037),
-    onPrimaryContainer = Color(0xFFFFCCBC),
-    secondary = Color(0xFFFFB74D),
-    onSecondary = Color(0xFF3E2723),
-    secondaryContainer = Color(0xFF4E342E),
-    onSecondaryContainer = Color(0xFFFFE0B2),
-    tertiary = Color(0xFF81C784),
-    onTertiary = Color(0xFF1B5E20),
-    background = Color(0xFF121212),
-    onBackground = Color(0xFFEDE0DC),
-    surface = Color(0xFF1E1E1E),
-    onSurface = Color(0xFFEDE0DC),
-    surfaceVariant = Color(0xFF2C2624),
-    onSurfaceVariant = Color(0xFFD7CCC8)
+    primary = Color(0xFFFF8A65), onPrimary = Color(0xFF3E2723),
+    primaryContainer = Color(0xFF5D4037), onPrimaryContainer = Color(0xFFFFCCBC),
+    secondary = Color(0xFFFFB74D), onSecondary = Color(0xFF3E2723),
+    secondaryContainer = Color(0xFF4E342E), onSecondaryContainer = Color(0xFFFFE0B2),
+    tertiary = Color(0xFF81C784), onTertiary = Color(0xFF1B5E20),
+    background = Color(0xFF121212), onBackground = Color(0xFFEDE0DC),
+    surface = Color(0xFF1E1E1E), onSurface = Color(0xFFEDE0DC),
+    surfaceVariant = Color(0xFF2C2624), onSurfaceVariant = Color(0xFFD7CCC8)
 )
 
-// =========================================================================
-// 2. IMMUTABLE МОДЕЛИ ДАННЫХ
-// =========================================================================
 @Immutable
 data class Recipe(
     val id: String,
@@ -220,17 +145,10 @@ data class Recipe(
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
-        put("id", id)
-        put("title", title)
-        put("description", description)
-        put("cuisine", cuisine)
-        put("category", category)
-        put("cookingTime", cookingTime)
-        put("difficulty", difficulty)
-        put("calories", calories)
-        put("isCustom", isCustom)
-        put("imageUrls", JSONArray(imageUrls))
-        put("ingredients", JSONArray(ingredients))
+        put("id", id); put("title", title); put("description", description)
+        put("cuisine", cuisine); put("category", category); put("cookingTime", cookingTime)
+        put("difficulty", difficulty); put("calories", calories); put("isCustom", isCustom)
+        put("imageUrls", JSONArray(imageUrls)); put("ingredients", JSONArray(ingredients))
         put("instructions", JSONArray(instructions))
     }
 
@@ -252,13 +170,11 @@ data class Recipe(
                 id = obj.optString("id", "rec_${System.currentTimeMillis()}"),
                 title = title,
                 description = if (rawDesc.isNotBlank()) rawDesc else CulinaryUtils.buildDishDescription(title, cuisine, category, ingList),
-                cuisine = cuisine,
-                category = category,
+                cuisine = cuisine, category = category,
                 cookingTime = obj.optString("cookingTime", "30 мин"),
                 difficulty = obj.optString("difficulty", "Легко"),
                 calories = obj.optInt("calories", 250),
-                imageUrls = cleanImages,
-                ingredients = ingList,
+                imageUrls = cleanImages, ingredients = ingList,
                 instructions = List(insts.length()) { insts.getString(it) },
                 isCustom = obj.optBoolean("isCustom", false)
             )
@@ -293,100 +209,46 @@ enum class SortOrder(val label: String) {
     LOW_CALORIE("🥗 Легкие")
 }
 
-enum class AppScreen {
-    RECIPES,
-    SHOPPING_LIST,
-    ADD_RECIPE
-}
+enum class AppScreen { RECIPES, SHOPPING_LIST, ADD_RECIPE }
 
 // =========================================================================
-// 3. МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С ПРОВЕРКОЙ ПОДПИСИ И НАТИВНЫМ УСТАНОВЩИКОМ
+// МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С GITHUB RELEASES
 // =========================================================================
 object AppUpdateManager {
     var signatureConflictState by mutableStateOf(false)
-    var isSystemInstallerActive by mutableStateOf(false)
-    var lastDownloadedKeyHash by mutableStateOf<String?>(null)
 
-    fun getInstalledUpdateTimestamp(context: Context): Long {
-        return try {
-            val pkgInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            pkgInfo.lastUpdateTime
-        } catch (_: Exception) {
-            0L
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    fun getInstalledSignatureShortHash(context: Context): String {
-        return try {
-            val bytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val info = context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
-                info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
-            } else {
-                val info = context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
-                info.signatures?.firstOrNull()?.toByteArray()
-            } ?: return "Неизвестно"
-            val md = MessageDigest.getInstance("SHA-256").digest(bytes)
-            md.take(4).joinToString(":") { "%02X".format(it) }
-        } catch (_: Exception) {
-            "Неизвестно"
-        }
-    }
-
-    @Suppress("DEPRECATION")
-    fun getArchiveSignatureShortHash(context: Context, apkFile: File): String {
-        return try {
-            val bytes = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                val info = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
-                info?.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
-            } else {
-                val info = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.GET_SIGNATURES)
-                info?.signatures?.firstOrNull()?.toByteArray()
-            } ?: return "Неизвестно"
-            val md = MessageDigest.getInstance("SHA-256").digest(bytes)
-            md.take(4).joinToString(":") { "%02X".format(it) }
-        } catch (_: Exception) {
-            "Неизвестно"
-        }
-    }
+    fun getInstalledUpdateTimestamp(context: Context): Long = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
+    } catch (_: Exception) { 0L }
 
     fun formatTimestamp(millis: Long): String {
         if (millis <= 0L) return "Неизвестно"
-        val sdf = SimpleDateFormat("dd.MM.yyyy в HH:mm", Locale.getDefault())
-        return sdf.format(Date(millis))
+        return SimpleDateFormat("dd.MM.yyyy в HH:mm", Locale.getDefault()).format(Date(millis))
     }
 
     private fun parseIsoTimestamp(iso: String): Long {
         if (iso.isBlank()) return 0L
         return try {
-            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
-            }
-            sdf.parse(iso)?.time ?: 0L
-        } catch (_: Exception) {
-            0L
-        }
+            }.parse(iso)?.time ?: 0L
+        } catch (_: Exception) { 0L }
     }
 
     suspend fun checkGitHubUpdate(context: Context, repoPath: String = DEFAULT_GITHUB_REPO): Result<GitHubReleaseInfo> =
         withContext(Dispatchers.IO) {
-            val cleanRepo = repoPath
-                .removePrefix("https://github.com/")
-                .removePrefix("http://github.com/")
-                .removePrefix("github.com/")
-                .trim('/')
-                .ifEmpty { DEFAULT_GITHUB_REPO }
-
+            val cleanRepo = repoPath.removePrefix("https://github.com/").removePrefix("http://github.com/")
+                .removePrefix("github.com/").trim('/').ifEmpty { DEFAULT_GITHUB_REPO }
             val candidateRepos = listOf(cleanRepo, "GattlerGun/RecipeApp").distinct()
             val installedTime = getInstalledUpdateTimestamp(context)
 
             for (repo in candidateRepos) {
-                val urlsToTry = listOf(
+                val urls = listOf(
                     "https://api.github.com/repos/$repo/releases/tags/latest-apk",
                     "https://api.github.com/repos/$repo/releases/latest",
                     "https://api.github.com/repos/$repo/releases"
                 )
-                for (apiUrl in urlsToTry) {
+                for (apiUrl in urls) {
                     var conn: HttpURLConnection? = null
                     try {
                         conn = (URL(apiUrl).openConnection() as HttpURLConnection).apply {
@@ -394,17 +256,14 @@ object AppUpdateManager {
                             setRequestProperty("Accept", "application/vnd.github+json")
                             setRequestProperty("User-Agent", "ChefRecipeApp-Updater")
                             setRequestProperty("Cache-Control", "no-cache")
-                            connectTimeout = 6000
-                            readTimeout = 6000
+                            connectTimeout = 6000; readTimeout = 6000
                         }
                         if (conn.responseCode == 200) {
                             val body = conn.inputStream.bufferedReader().use { it.readText() }
                             val releaseObj = if (body.trimStart().startsWith("[")) {
                                 val arr = JSONArray(body)
                                 if (arr.length() > 0) arr.getJSONObject(0) else continue
-                            } else {
-                                JSONObject(body)
-                            }
+                            } else JSONObject(body)
 
                             val assets = releaseObj.optJSONArray("assets") ?: JSONArray()
                             var apkUrl = ""
@@ -413,24 +272,16 @@ object AppUpdateManager {
 
                             for (i in 0 until assets.length()) {
                                 val asset = assets.getJSONObject(i)
-                                val name = asset.optString("name", "")
-                                if (name.endsWith(".apk", ignoreCase = true)) {
+                                if (asset.optString("name", "").endsWith(".apk", ignoreCase = true)) {
                                     apkUrl = asset.optString("browser_download_url", "")
                                     assetUpdatedIso = asset.optString("updated_at", assetUpdatedIso)
                                     sizeBytes = asset.optLong("size", 0L)
                                     break
                                 }
                             }
-
-                            if (apkUrl.isEmpty()) {
-                                apkUrl = "https://github.com/$repo/releases/download/latest-apk/ChefRecipeApp.apk"
-                            }
-
+                            if (apkUrl.isEmpty()) apkUrl = "https://github.com/$repo/releases/download/latest-apk/ChefRecipeApp.apk"
                             val remoteMillis = parseIsoTimestamp(assetUpdatedIso)
-                            val sizeMb = if (sizeBytes > 0) {
-                                String.format(Locale.US, "%.1f МБ", sizeBytes / (1024.0 * 1024.0))
-                            } else "APK сборка"
-
+                            val sizeMb = if (sizeBytes > 0) String.format(Locale.US, "%.1f МБ", sizeBytes / 1048576.0) else "APK сборка"
                             val isNewer = remoteMillis > (installedTime + 60_000L)
 
                             return@withContext Result.success(
@@ -446,22 +297,15 @@ object AppUpdateManager {
                             )
                         }
                     } catch (_: Exception) {
-                    } finally {
-                        conn?.disconnect()
-                    }
+                    } finally { conn?.disconnect() }
                 }
             }
-
             val directUrl = "https://github.com/$cleanRepo/releases/download/latest-apk/ChefRecipeApp.apk"
-            return@withContext Result.success(
+            Result.success(
                 GitHubReleaseInfo(
-                    repoName = cleanRepo,
-                    releaseTitle = "Прямая сборка из Releases (latest-apk)",
-                    publishedAtMillis = System.currentTimeMillis(),
-                    publishedFormatted = "Последний билд в ветке main",
-                    downloadUrl = directUrl,
-                    sizeMb = "ChefRecipeApp.apk",
-                    isNewerThanInstalled = true
+                    repoName = cleanRepo, releaseTitle = "Прямая сборка (latest-apk)",
+                    publishedAtMillis = System.currentTimeMillis(), publishedFormatted = "Последний билд в main",
+                    downloadUrl = directUrl, sizeMb = "ChefRecipeApp.apk", isNewerThanInstalled = true
                 )
             )
         }
@@ -477,188 +321,104 @@ object AppUpdateManager {
                     put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
                 }
                 val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                if (uri != null) {
-                    resolver.openOutputStream(uri)?.use { out ->
-                        sourceFile.inputStream().use { inp -> inp.copyTo(out) }
-                    }
-                }
+                if (uri != null) resolver.openOutputStream(uri)?.use { out -> sourceFile.inputStream().use { it.copyTo(out) } }
             } else {
                 @Suppress("DEPRECATION")
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!downloadsDir.exists()) downloadsDir.mkdirs()
-                val destFile = File(downloadsDir, fileName)
-                sourceFile.copyTo(destFile, overwrite = true)
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!dir.exists()) dir.mkdirs()
+                sourceFile.copyTo(File(dir, fileName), overwrite = true)
             }
         } catch (_: Exception) {}
     }
 
-    suspend fun downloadAndInstallApk(
-        context: Context,
-        releaseInfo: GitHubReleaseInfo,
-        onProgress: (Float) -> Unit
-    ): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            var currentUrl = releaseInfo.downloadUrl
-            var redirects = 0
-            var conn: HttpURLConnection
-
-            while (true) {
-                conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
-                    instanceFollowRedirects = true
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android; ChefRecipeApp)")
-                    setRequestProperty("Cache-Control", "no-cache")
-                    connectTimeout = 15000
-                    readTimeout = 30000
-                }
-                val code = conn.responseCode
-                if (code in listOf(301, 302, 303, 307, 308)) {
-                    val location = conn.getHeaderField("Location")
-                    conn.disconnect()
-                    if (location.isNullOrBlank() || redirects >= 6) break
-                    currentUrl = location
-                    redirects++
-                } else {
-                    break
-                }
-            }
-
-            if (conn.responseCode != 200) {
-                conn.disconnect()
-                return@withContext Result.failure(Exception("Файл ChefRecipeApp.apk еще не создан в разделе Releases (код ${conn.responseCode})"))
-            }
-
-            val totalBytes = conn.contentLengthLong
-            val apkFile = File(context.externalCacheDir ?: context.cacheDir, "ChefRecipeApp_update.apk")
-            if (apkFile.exists()) apkFile.delete()
-
-            conn.inputStream.use { input ->
-                FileOutputStream(apkFile).use { output ->
-                    val buffer = ByteArray(32 * 1024)
-                    var downloaded = 0L
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
-                        downloaded += read
-                        if (totalBytes > 0) {
-                            onProgress((downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f))
-                        }
+    suspend fun downloadAndInstallApk(context: Context, releaseInfo: GitHubReleaseInfo, onProgress: (Float) -> Unit): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            try {
+                var currentUrl = releaseInfo.downloadUrl
+                var redirects = 0
+                var conn: HttpURLConnection
+                while (true) {
+                    conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = true; requestMethod = "GET"
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Android; ChefRecipeApp)")
+                        setRequestProperty("Cache-Control", "no-cache")
+                        connectTimeout = 15000; readTimeout = 30000
                     }
-                    output.flush()
+                    if (conn.responseCode in listOf(301, 302, 303, 307, 308)) {
+                        val loc = conn.getHeaderField("Location")
+                        conn.disconnect()
+                        if (loc.isNullOrBlank() || redirects >= 6) break
+                        currentUrl = loc; redirects++
+                    } else break
                 }
-            }
-            conn.disconnect()
-
-            copyApkToPublicDownloads(context, apkFile)
-
-            // Сравниваем цифровую подпись установленного приложения и скачанного APK до запуска установщика!
-            val installedHash = getInstalledSignatureShortHash(context)
-            val downloadedHash = getArchiveSignatureShortHash(context, apkFile)
-            lastDownloadedKeyHash = downloadedHash
-
-            withContext(Dispatchers.Main) {
-                if (installedHash != "Неизвестно" && downloadedHash != "Неизвестно" && installedHash != downloadedHash) {
-                    isSystemInstallerActive = false
-                    signatureConflictState = true
-                } else {
-                    isSystemInstallerActive = true
-                    triggerPackageInstaller(context, apkFile)
+                if (conn.responseCode != 200) {
+                    conn.disconnect()
+                    return@withContext Result.failure(Exception("APK еще не выгружен в Releases (код ${conn.responseCode})"))
                 }
-            }
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(e)
+                val totalBytes = conn.contentLengthLong
+                val apkFile = File(context.externalCacheDir ?: context.cacheDir, "ChefRecipeApp_update.apk")
+                if (apkFile.exists()) apkFile.delete()
+
+                conn.inputStream.use { input ->
+                    FileOutputStream(apkFile).use { output ->
+                        val buffer = ByteArray(32 * 1024)
+                        var downloaded = 0L
+                        var read: Int
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            downloaded += read
+                            if (totalBytes > 0) onProgress((downloaded.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f))
+                        }
+                        output.flush()
+                    }
+                }
+                conn.disconnect()
+                copyApkToPublicDownloads(context, apkFile)
+                withContext(Dispatchers.Main) { triggerPackageInstaller(context, apkFile) }
+                Result.success(Unit)
+            } catch (e: Exception) { Result.failure(e) }
         }
-    }
 
     fun triggerPackageInstaller(context: Context, apkFile: File) {
         if (!apkFile.exists() || apkFile.length() == 0L) {
-            isSystemInstallerActive = false
             Toast.makeText(context, "Файл обновления не найден", Toast.LENGTH_SHORT).show()
             return
         }
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !context.packageManager.canRequestPackageInstalls()) {
-            isSystemInstallerActive = false
-            Toast.makeText(
-                context,
-                "Разрешите установку обновлений для «Шеф-Повар» и нажмите «Обновить» еще раз",
-                Toast.LENGTH_LONG
-            ).show()
-            val permIntent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}")
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(permIntent)
+            Toast.makeText(context, "Разрешите установку обновлений для «Шеф-Повар» и нажмите «Обновить» еще раз", Toast.LENGTH_LONG).show()
+            context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return
         }
-
-        // Способ 1 (Приоритетный): Открываем полноценное системное окно установщика Android (с его собственной полоской прогресса!)
-        val providerInfo = context.packageManager.resolveContentProvider(APK_PROVIDER_AUTHORITY, 0)
-        if (providerInfo != null) {
-            try {
-                val apkUri = Uri.parse("content://$APK_PROVIDER_AUTHORITY/ChefRecipeApp_update.apk")
-                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(apkUri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(viewIntent)
-                return
-            } catch (_: Exception) {
-                // Если системный обработчик недоступен — переходим к способу 2
-            }
-        }
-
-        // Способ 2 (Резервный): Сессия PackageInstaller
         var session: PackageInstaller.Session? = null
         try {
-            val packageInstaller = context.packageManager.packageInstaller
-            try {
-                for (oldSession in packageInstaller.mySessions) {
-                    packageInstaller.abandonSession(oldSession.sessionId)
-                }
-            } catch (_: Exception) {}
-
+            val installer = context.packageManager.packageInstaller
+            try { installer.mySessions.forEach { installer.abandonSession(it.sessionId) } } catch (_: Exception) {}
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-            val sessionId = packageInstaller.createSession(params)
-            session = packageInstaller.openSession(sessionId)
-
+            val sessionId = installer.createSession(params)
+            session = installer.openSession(sessionId)
             apkFile.inputStream().use { input ->
                 session.openWrite("ChefRecipeApp_update.apk", 0, apkFile.length()).use { output ->
-                    input.copyTo(output, bufferSize = 32 * 1024)
+                    input.copyTo(output, 32 * 1024)
                     session.fsync(output)
                 }
             }
-
-            val callbackIntent = Intent(context, MainActivity::class.java).apply {
-                action = ACTION_INSTALL_COMMIT
-            }
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
+            val callbackIntent = Intent(context, MainActivity::class.java).apply { action = ACTION_INSTALL_COMMIT }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
             val pendingIntent = PendingIntent.getActivity(context, sessionId, callbackIntent, flags)
             session.commit(pendingIntent.intentSender)
         } catch (e: Exception) {
-            isSystemInstallerActive = false
-            Toast.makeText(context, "Ошибка запуска установщика: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "Ошибка установщика: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         } finally {
-            try {
-                session?.close()
-            } catch (_: Exception) {}
+            try { session?.close() } catch (_: Exception) {}
         }
     }
 }
 
 // =========================================================================
-// 4. КУЛИНАРНЫЕ УТИЛИТЫ И ГЕНЕРАТОР ФОТО ГОТОВЫХ БЛЮД
+// КУЛИНАРНЫЕ УТИЛИТЫ И СЛОВАРЬ
 // =========================================================================
 object CulinaryUtils {
-    val CUISINES = listOf(
-        "Все", "Русская", "Корейская", "Французская", "Итальянская",
-        "Японская", "Грузинская", "Мексиканская", "Китайская", "Тайская", "Индийская"
-    )
+    val CUISINES = listOf("Все", "Русская", "Корейская", "Французская", "Итальянская", "Японская", "Грузинская", "Мексиканская", "Китайская", "Тайская", "Индийская")
     val CATEGORIES = listOf("Все", "Супы", "Каши и завтраки", "Вторые блюда", "Выпечка", "Что-то к чаю", "Салаты", "Паста и пицца")
     val QUICK_FRIDGE = listOf("Курица", "Яйца", "Картофель", "Сыр", "Томаты", "Молоко", "Рис", "Фарш", "Творог", "Капуста", "Грибы")
 
@@ -688,26 +448,18 @@ object CulinaryUtils {
         val angle1 = "https://image.pollinations.ai/prompt/$encoded%20cooked%20dish%20plated%20restaurant%20food%20photography?width=600&height=400&nologo=true&seed=${seedBase + 11}"
         val angle2 = "https://image.pollinations.ai/prompt/$encoded%20delicious%20prepared%20meal%20overhead%20closeup%20serving?width=600&height=400&nologo=true&seed=${seedBase + 55}"
         val angle3 = "https://image.pollinations.ai/prompt/$encoded%20traditional%20cooked%20food%20on%20table%20gourmet?width=600&height=400&nologo=true&seed=${seedBase + 99}"
-
-        return if (!primaryThumbUrl.isNullOrBlank()) {
-            listOf(primaryThumbUrl, angle1, angle2)
-        } else {
-            listOf(angle1, angle2, angle3)
-        }
+        return if (!primaryThumbUrl.isNullOrBlank()) listOf(primaryThumbUrl, angle1, angle2) else listOf(angle1, angle2, angle3)
     }
 
     private val AREA_TO_RUSSIAN_CUISINE = mapOf(
-        "russian" to "Русская", "korean" to "Корейская", "french" to "Французская",
-        "italian" to "Итальянская", "japanese" to "Японская", "georgian" to "Грузинская",
-        "mexican" to "Мексиканская", "chinese" to "Китайская", "thai" to "Тайская",
-        "indian" to "Индийская", "greek" to "Греческая", "spanish" to "Испанская",
-        "turkish" to "Турецкая", "vietnamese" to "Вьетнамская", "moroccan" to "Марокканская",
-        "american" to "Американская", "british" to "Британская", "polish" to "Польская",
-        "ukrainian" to "Украинская", "croatian" to "Хорватская", "irish" to "Ирландская",
-        "jamaican" to "Ямайская", "egyptian" to "Египетская", "dutch" to "Голландская",
-        "portuguese" to "Португальская", "canadian" to "Канадская", "malaysian" to "Малайзийская",
-        "tunisian" to "Тунисская", "filipino" to "Филиппинская", "kenyan" to "Кенийская",
-        "norwegian" to "Норвежская", "australian" to "Австралийская"
+        "russian" to "Русская", "korean" to "Корейская", "french" to "Французская", "italian" to "Итальянская",
+        "japanese" to "Японская", "georgian" to "Грузинская", "mexican" to "Мексиканская", "chinese" to "Китайская",
+        "thai" to "Тайская", "indian" to "Индийская", "greek" to "Греческая", "spanish" to "Испанская",
+        "turkish" to "Турецкая", "vietnamese" to "Вьетнамская", "moroccan" to "Марокканская", "american" to "Американская",
+        "british" to "Британская", "polish" to "Польская", "ukrainian" to "Украинская", "croatian" to "Хорватская",
+        "irish" to "Ирландская", "jamaican" to "Ямайская", "egyptian" to "Египетская", "dutch" to "Голландская",
+        "portuguese" to "Португальская", "canadian" to "Канадская", "malaysian" to "Малайзийская", "tunisian" to "Тунисская",
+        "filipino" to "Филиппинская", "kenyan" to "Кенийская", "norwegian" to "Норвежская", "australian" to "Австралийская"
     )
 
     private val CUISINE_FLAGS = mapOf(
@@ -721,38 +473,21 @@ object CulinaryUtils {
         "Филиппинская" to "🇵🇭", "Домашняя" to "🏠"
     )
 
-    fun buildDishDescription(
-        title: String,
-        cuisine: String,
-        category: String,
-        ingredients: List<String>
-    ): String {
+    fun buildDishDescription(title: String, cuisine: String, category: String, ingredients: List<String>): String {
         val coreIngs = ingredients.take(4)
             .map { normalizeAndTranslateCulinary(it.substringBefore("—").substringBefore("-")).trim().lowercase() }
-            .filter { it.isNotBlank() }
-            .joinToString(", ")
-
+            .filter { it.isNotBlank() }.joinToString(", ")
         val categoryFlavor = when (category) {
             "Супы", "Супы и закуски" -> "Ароматное первое блюдо с насыщенным бульоном и согревающим вкусом"
-            "Каши и завтраки" -> "Сытное и нежное утреннее блюдо, отлично подходящее для питательного завтрака"
+            "Каши и завтраки" -> "Сытное и нежное утреннее блюдо для питательного завтрака"
             "Выпечка" -> "Румяная домашняя выпечка с мягкой текстурой и аппетитной корочкой"
-            "Что-то к чаю" -> "Нежный десерт к чаю или кофе с приятной сладостью и ярким ароматом"
-            "Салаты", "Салаты и гарниры" -> "Свежее и сбалансированное блюдо с ярким сочетанием текстур и заправки"
+            "Что-то к чаю" -> "Нежный десерт к чаю или кофе с приятной сладостью и ароматом"
+            "Салаты", "Салаты и гарниры" -> "Свежее сбалансированное блюдо с ярким сочетанием текстур"
             "Паста и пицца" -> "Классическое блюдо с насыщенным соусом и аппетитной подачей"
-            else -> "Сытное и ароматное основное блюдо, идеально подходящее для обеда или ужина"
+            else -> "Сытное и ароматное основное блюдо для обеда или ужина"
         }
-
-        val cuisineNote = if (cuisine != "Мировая" && cuisine != "Все") {
-            "традиции кухни «$cuisine»"
-        } else {
-            "мировой кулинарной коллекции"
-        }
-
-        return if (coreIngs.isNotEmpty()) {
-            "$categoryFlavor из $cuisineNote. В основе рецепта — $coreIngs."
-        } else {
-            "$categoryFlavor из $cuisineNote."
-        }
+        val cuisineNote = if (cuisine != "Мировая" && cuisine != "Все") "традиции кухни «$cuisine»" else "мировой кулинарной коллекции"
+        return if (coreIngs.isNotEmpty()) "$categoryFlavor из $cuisineNote. В основе рецепта — $coreIngs." else "$categoryFlavor из $cuisineNote."
     }
 
     fun resolveRealCuisine(rawArea: String?, dishTitle: String, selectedFilterCuisine: String): String {
@@ -764,34 +499,27 @@ object CulinaryUtils {
                 if (cap != "Все" && cap != "Любая" && cap != "Разные") return cap
             }
         }
-
         val lowerTitle = dishTitle.lowercase()
         when {
-            lowerTitle.contains("кимчи") || lowerTitle.contains("корейск") || lowerTitle.contains("пибимпап") || lowerTitle.contains("токпокки") || lowerTitle.contains("яннём") || lowerTitle.contains("пулькоги") || lowerTitle.contains("чапчхэ") || lowerTitle.contains("кимпаб") -> return "Корейская"
-            lowerTitle.contains("борщ") || lowerTitle.contains("сырник") || lowerTitle.contains("строганов") || lowerTitle.contains("пельмен") || lowerTitle.contains("оливье") || lowerTitle.contains("блин") -> return "Русская"
-            lowerTitle.contains("рамен") || lowerTitle.contains("терияки") || lowerTitle.contains("суши") || lowerTitle.contains("удон") || lowerTitle.contains("мисо") || lowerTitle.contains("японск") -> return "Японская"
-            lowerTitle.contains("паста") || lowerTitle.contains("карбонара") || lowerTitle.contains("пицца") || lowerTitle.contains("лазанья") || lowerTitle.contains("ризотто") || lowerTitle.contains("тирамису") -> return "Итальянская"
-            lowerTitle.contains("круассан") || lowerTitle.contains("гратен") || lowerTitle.contains("жюльен") || lowerTitle.contains("жульен") || lowerTitle.contains("рататуй") || lowerTitle.contains("французск") -> return "Французская"
+            lowerTitle.contains("кимчи") || lowerTitle.contains("корейск") || lowerTitle.contains("пибимпап") || lowerTitle.contains("токпокки") || lowerTitle.contains("яннём") || lowerTitle.contains("пулькоги") -> return "Корейская"
+            lowerTitle.contains("борщ") || lowerTitle.contains("сырник") || lowerTitle.contains("строганов") || lowerTitle.contains("пельмен") || lowerTitle.contains("оливье") -> return "Русская"
+            lowerTitle.contains("рамен") || lowerTitle.contains("терияки") || lowerTitle.contains("суши") || lowerTitle.contains("удон") || lowerTitle.contains("японск") -> return "Японская"
+            lowerTitle.contains("паста") || lowerTitle.contains("карбонара") || lowerTitle.contains("пицца") || lowerTitle.contains("лазанья") || lowerTitle.contains("тирамису") -> return "Итальянская"
+            lowerTitle.contains("круассан") || lowerTitle.contains("гратен") || lowerTitle.contains("жюльен") || lowerTitle.contains("жульен") || lowerTitle.contains("французск") -> return "Французская"
             lowerTitle.contains("хачапури") || lowerTitle.contains("чкмерули") || lowerTitle.contains("хинкали") || lowerTitle.contains("харчо") || lowerTitle.contains("грузинск") -> return "Грузинская"
-            lowerTitle.contains("кесадилья") || lowerTitle.contains("тако") || lowerTitle.contains("буррито") || lowerTitle.contains("гуакамоле") || lowerTitle.contains("мексиканск") -> return "Мексиканская"
+            lowerTitle.contains("кесадилья") || lowerTitle.contains("тако") || lowerTitle.contains("буррито") || lowerTitle.contains("гуакамоле") -> return "Мексиканская"
             lowerTitle.contains("том ям") || lowerTitle.contains("пад тай") || lowerTitle.contains("тайск") -> return "Тайская"
             lowerTitle.contains("карри") || lowerTitle.contains("масала") || lowerTitle.contains("индийск") -> return "Индийская"
             lowerTitle.contains("вок") || lowerTitle.contains("кисло-сладк") || lowerTitle.contains("китайск") -> return "Китайская"
         }
-
-        if (selectedFilterCuisine != "Все") return selectedFilterCuisine
-        return "Мировая"
+        return if (selectedFilterCuisine != "Все") selectedFilterCuisine else "Мировая"
     }
 
     fun resolveRealCategory(rawCategory: String?, dishTitle: String, selectedFilterCategory: String): String {
         if (selectedFilterCategory != "Все") return selectedFilterCategory
         val lowerTitle = dishTitle.lowercase()
-        if (lowerTitle.contains("суп") || lowerTitle.contains("борщ") || lowerTitle.contains("рамен") || lowerTitle.contains("бульон") || lowerTitle.contains("том ям") || lowerTitle.contains("харчо")) {
-            return "Супы"
-        }
-        if (lowerTitle.contains("салат") || lowerTitle.contains("цезарь") || lowerTitle.contains("оливье")) {
-            return "Салаты"
-        }
+        if (lowerTitle.contains("суп") || lowerTitle.contains("борщ") || lowerTitle.contains("рамен") || lowerTitle.contains("бульон") || lowerTitle.contains("том ям")) return "Супы"
+        if (lowerTitle.contains("салат") || lowerTitle.contains("цезарь") || lowerTitle.contains("оливье")) return "Салаты"
         val cleanCat = rawCategory?.trim()?.lowercase() ?: ""
         return when (cleanCat) {
             "starter" -> "Супы"
@@ -799,16 +527,12 @@ object CulinaryUtils {
             "dessert" -> "Что-то к чаю"
             "pasta" -> "Паста и пицца"
             "side" -> "Салаты"
-            "beef", "chicken", "pork", "lamb", "seafood", "goat", "miscellaneous" -> "Вторые блюда"
-            "vegan", "vegetarian" -> "Вторые блюда"
+            "beef", "chicken", "pork", "lamb", "seafood", "goat", "miscellaneous", "vegan", "vegetarian" -> "Вторые блюда"
             else -> if (!hasLatin(cleanCat) && cleanCat.isNotEmpty()) cleanCat.replaceFirstChar { it.uppercase() } else "Вторые блюда"
         }
     }
 
-    fun formatCuisineWithFlag(cuisine: String): String {
-        val flag = CUISINE_FLAGS[cuisine] ?: "🌍"
-        return "$flag $cuisine"
-    }
+    fun formatCuisineWithFlag(cuisine: String): String = "${CUISINE_FLAGS[cuisine] ?: "🌍"} $cuisine"
 
     private val SPEECH_REPLACEMENTS = listOf(
         Regex("(\\d+)\\s*-\\s*(\\d+)") to "$1 или $2",
@@ -825,204 +549,80 @@ object CulinaryUtils {
     )
 
     private val UNIT_PRE_REPLACEMENTS = listOf(
-        Regex("(?i)\\b(\\d+)\\s+1/2\\b") to "$1.5",
-        Regex("(?i)\\b(\\d+)\\s+1/4\\b") to "$1.25",
-        Regex("(?i)\\b(\\d+)\\s+3/4\\b") to "$1.75",
-        Regex("(?i)\\b(\\d+)\\s+1/3\\b") to "$1.3",
-        Regex("(?i)\\b(\\d+)\\s+2/3\\b") to "$1.7",
-        Regex("(?i)\\b1/2\\b") to "0.5",
-        Regex("(?i)\\b1/4\\b") to "0.25",
-        Regex("(?i)\\b3/4\\b") to "0.75",
-        Regex("(?i)\\b1/3\\b") to "0.3",
-        Regex("(?i)\\b2/3\\b") to "0.7",
-        Regex("(?i)(\\d+)\\s*g\\b") to "$1 г",
-        Regex("(?i)(\\d+)\\s*kg\\b") to "$1 кг",
-        Regex("(?i)(\\d+)\\s*ml\\b") to "$1 мл",
-        Regex("(?i)(\\d+)\\s*oz\\b") to "$1 унц.",
-        Regex("(?i)(\\d+)\\s*lb(?:s)?\\b") to "$1 фунт.",
-        Regex("(?i)\\btbsp(?:s)?\\b") to "ст.л.",
-        Regex("(?i)\\btblsp(?:s)?\\b") to "ст.л.",
-        Regex("(?i)\\btablespoon(?:s)?\\b") to "ст.л.",
-        Regex("(?i)\\btsp(?:s)?\\b") to "ч.л.",
-        Regex("(?i)\\bteaspoon(?:s)?\\b") to "ч.л."
+        Regex("(?i)\\b(\\d+)\\s+1/2\\b") to "$1.5", Regex("(?i)\\b(\\d+)\\s+1/4\\b") to "$1.25",
+        Regex("(?i)\\b(\\d+)\\s+3/4\\b") to "$1.75", Regex("(?i)\\b(\\d+)\\s+1/3\\b") to "$1.3",
+        Regex("(?i)\\b(\\d+)\\s+2/3\\b") to "$1.7", Regex("(?i)\\b1/2\\b") to "0.5",
+        Regex("(?i)\\b1/4\\b") to "0.25", Regex("(?i)\\b3/4\\b") to "0.75",
+        Regex("(?i)\\b1/3\\b") to "0.3", Regex("(?i)\\b2/3\\b") to "0.7",
+        Regex("(?i)(\\d+)\\s*g\\b") to "$1 г", Regex("(?i)(\\d+)\\s*kg\\b") to "$1 кг",
+        Regex("(?i)(\\d+)\\s*ml\\b") to "$1 мл", Regex("(?i)(\\d+)\\s*oz\\b") to "$1 унц.",
+        Regex("(?i)(\\d+)\\s*lb(?:s)?\\b") to "$1 фунт.", Regex("(?i)\\btbsp(?:s)?\\b") to "ст.л.",
+        Regex("(?i)\\btblsp(?:s)?\\b") to "ст.л.", Regex("(?i)\\btablespoon(?:s)?\\b") to "ст.л.",
+        Regex("(?i)\\btsp(?:s)?\\b") to "ч.л.", Regex("(?i)\\bteaspoon(?:s)?\\b") to "ч.л."
     )
 
     private val CULINARY_DICTIONARY: List<Pair<Regex, String>> = listOf(
-        "graham cracker crumbs" to "крошка песочного печенья",
-        "graham crackers" to "песочное печенье",
-        "graham cracker" to "песочное печенье",
-        "digestive biscuits" to "песочное печенье",
-        "evaporated milk" to "концентрированное молоко",
-        "condensed milk" to "сгущенное молоко",
-        "extra virgin olive oil" to "оливковое масло первого отжима",
-        "sunflower oil" to "подсолнечное масло", "vegetable oil" to "растительное масло",
-        "sesame seed oil" to "кунжутное масло", "sesame oil" to "кунжутное масло",
-        "coconut oil" to "кокосовое масло", "olive oil" to "оливковое масло",
-        "peanut oil" to "арахисовое масло", "canola oil" to "рапсовое масло",
-        "unsalted butter" to "сливочное масло", "salted butter" to "соленое сливочное масло",
-        "melted butter" to "растопленное сливочное масло", "chicken breast" to "куриная грудка",
-        "chicken breasts" to "куриные грудки", "chicken thighs" to "куриные бедра",
-        "chicken thigh" to "куриное бедро", "chicken wings" to "куриные крылышки",
-        "chicken stock" to "куриный бульон", "chicken broth" to "куриный бульон",
-        "beef stock" to "говяжий бульон", "beef broth" to "говяжий бульон",
-        "vegetable stock" to "овощной бульон", "vegetable broth" to "овощной бульон",
-        "minced beef" to "говяжий фарш", "ground beef" to "говяжий фарш",
-        "minced pork" to "свиной фарш", "ground pork" to "свиной фарш",
-        "heavy cream" to "жирные сливки", "double cream" to "жирные сливки",
-        "single cream" to "сливки", "sour cream" to "сметана",
-        "whipping cream" to "сливки для взбивания", "cream cheese" to "сливочный сыр",
-        "cheddar cheese" to "сыр Чеддер", "parmesan cheese" to "сыр Пармезан",
-        "mozzarella cheese" to "сыр Моцарелла", "feta cheese" to "сыр Фета",
-        "goat cheese" to "козий сыр", "spring onions" to "зеленый лук",
-        "spring onion" to "зеленый лук", "green onions" to "зеленый лук",
-        "green onion" to "зеленый лук", "red onion" to "красный лук",
-        "red onions" to "красный лук", "yellow onion" to "репчатый лук",
-        "garlic cloves" to "зубчики чеснока", "garlic clove" to "зубчик чеснока",
-        "cloves garlic" to "зубчика чеснока", "clove garlic" to "зубчик чеснока",
-        "garlic powder" to "сушеный чеснок", "onion powder" to "луковый порошок",
-        "cherry tomatoes" to "томаты черри", "plum tomatoes" to "сливовидные томаты",
-        "chopped tomatoes" to "рубленые томаты", "canned tomatoes" to "консервированные томаты",
-        "tomato puree" to "томатное пюре", "tomato paste" to "томатная паста",
-        "tomato sauce" to "томатный соус", "soy sauce" to "соевый соус",
-        "fish sauce" to "рыбный соус", "oyster sauce" to "устричный соус",
-        "worcestershire sauce" to "вустерский соус", "hot sauce" to "острый соус",
-        "chili sauce" to "соус чили", "white wine vinegar" to "белый винный уксус",
-        "red wine vinegar" to "красный винный уксус", "apple cider vinegar" to "яблочный уксус",
-        "balsamic vinegar" to "бальзамический уксус", "rice vinegar" to "рисовый уксус",
-        "white wine" to "белое сухое вино", "red wine" to "красное вино",
-        "lemon juice" to "лимонный сок", "lime juice" to "сок лайма",
-        "orange juice" to "апельсиновый сок", "lemon zest" to "цедра лимона",
-        "orange zest" to "цедра апельсина", "all-purpose flour" to "пшеничная мука",
-        "all purpose flour" to "пшеничная мука", "plain flour" to "пшеничная мука",
-        "self-raising flour" to "мука с разрыхлителем", "self raising flour" to "мука с разрыхлителем",
-"bread flour" to "хлебопекарная мука", "corn flour" to "кукурузный крахмал",
-        "cornflour" to "кукурузный крахмал", "cornstarch" to "кукурузный крахмал",
-        "corn starch" to "кукурузный крахмал", "baking powder" to "разрыхлитель",
-        "baking soda" to "пищевая сода", "bicarbonate of soda" to "пищевая сода",
-        "caster sugar" to "мелкий сахар", "brown sugar" to "тростниковый сахар",
-        "icing sugar" to "сахарная пудра", "powdered sugar" to "сахарная пудра",
-        "granulated sugar" to "сахарный песок", "vanilla extract" to "ванильный экстракт",
-        "black pepper" to "черный перец", "white pepper" to "белый перец",
-        "cayenne pepper" to "кайенский перец", "red pepper flakes" to "хлопья красного перца",
-        "chilli flakes" to "хлопья чили", "chili powder" to "порошок чили",
-        "bell pepper" to "болгарский перец", "red pepper" to "красный сладкий перец",
-        "green pepper" to "зеленый перец", "sweet potatoes" to "батат",
-        "sweet potato" to "батат", "bay leaf" to "лавровый лист", "bay leaves" to "лавровый лист",
-        "egg yolks" to "яичные желтки", "egg yolk" to "яичный желток",
-        "egg whites" to "яичные белки", "egg white" to "яичный белок",
-        "free-range eggs" to "домашние яйца", "coconut milk" to "кокосовое молоко",
-        "almond milk" to "миндальное молоко", "bread crumbs" to "панировочные сухари",
-        "breadcrumbs" to "панировочные сухари", "sesame seeds" to "семена кунжута",
-        "sunflower seeds" to "семечки подсолнуха", "pine nuts" to "кедровые орешки",
-        "peanut butter" to "арахисовая паста", "maple syrup" to "кленовый сироп",
-        "to taste" to "по вкусу", "for garnish" to "для украшения", "to serve" to "для подачи",
-        "finely chopped" to "мелко нарезанный", "roughly chopped" to "крупно нарезанный",
-        "thinly sliced" to "тонко нарезанный", "freshly ground" to "свежемолотый",
-        "room temperature" to "комнатной температуры", "preheat the oven" to "разогрейте духовку",
-        "preheat oven" to "разогрейте духовку", "medium heat" to "средний огонь",
-        "high heat" to "сильный огонь", "low heat" to "слабый огонь",
-        "golden brown" to "золотистая корочка", "bring to a boil" to "доведите до кипения",
-        "in a large bowl" to "в большой миске", "in a bowl" to "в миске",
-        "frying pan" to "сковорода", "baking tray" to "противень", "baking sheet" to "противень",
-        "chicken" to "курица", "beef" to "говядина", "pork" to "свинина", "lamb" to "баранина",
-        "turkey" to "индейка", "duck" to "утка", "veal" to "телятина", "bacon" to "бекон",
-        "sausage" to "колбаски", "sausages" to "колбаски", "ham" to "ветчина", "salami" to "салями",
-        "prosciutto" to "прошутто", "chorizo" to "чоризо", "meat" to "мясо", "mince" to "фарш",
-        "salmon" to "лосось", "tuna" to "тунец", "cod" to "треска", "fish" to "рыба",
-        "shrimp" to "креветки", "prawns" to "креветки", "prawn" to "креветка", "crab" to "краб",
-        "squid" to "кальмар", "mussels" to "мидии", "seafood" to "морепродукты",
-        "potatoes" to "картофель", "potato" to "картофель", "carrots" to "морковь", "carrot" to "морковь",
-        "onions" to "лук", "onion" to "лук", "shallots" to "лук-шалот", "shallot" to "лук-шалот",
-        "leek" to "лук-порей", "leeks" to "лук-порей", "garlic" to "чеснок", "ginger" to "имбирь",
-        "tomatoes" to "томаты", "tomato" to "томат", "cucumber" to "огурец", "cucumbers" to "огурцы",
-        "cabbage" to "капуста", "broccoli" to "брокколи", "cauliflower" to "цветная капуста",
-        "spinach" to "шпинат", "lettuce" to "листья салата", "celery" to "сельдерей",
-        "zucchini" to "кабачок", "courgette" to "кабачок", "courgettes" to "кабачки",
-        "eggplant" to "баклажан", "aubergine" to "баклажан", "pumpkin" to "тыква",
-        "mushrooms" to "грибы", "mushroom" to "грибы", "peas" to "зеленый горошек",
-        "beans" to "фасоль", "lentils" to "чечевица", "chickpeas" to "нут", "corn" to "кукуруза",
-        "sweetcorn" to "сладкая кукуруза", "avocado" to "авокадо", "olives" to "оливки",
-        "capers" to "каперсы", "beetroot" to "свекла", "beets" to "свекла", "radish" to "редис",
-        "asparagus" to "спаржа", "artichoke" to "артишок", "peppers" to "перец",
-        "parsley" to "петрушка", "cilantro" to "кинза", "coriander" to "кориандр",
-        "dill" to "укроп", "basil" to "базилик", "mint" to "мята", "rosemary" to "розмарин",
-        "thyme" to "тимьян", "oregano" to "орегано", "sage" to "шалфей", "chives" to "зеленый лук",
-        "tarragon" to "эстрагон", "paprika" to "паприка", "cumin" to "зира (кумин)",
-        "turmeric" to "куркума", "cinnamon" to "корица", "nutmeg" to "мускатный орех",
-        "cloves" to "зубчика", "clove" to "зубчик", "cardamom" to "кардамон", "saffron" to "шафран",
-        "vanilla" to "ваниль", "curry" to "карри", "chili" to "чили", "chilli" to "чили",
-        "mustard" to "горчица", "mayonnaise" to "майонез", "ketchup" to "кетчуп",
-        "vinegar" to "уксус", "sauce" to "соус", "paste" to "паста", "stock" to "бульон",
-        "broth" to "бульон", "bouillon" to "бульон", "water" to "вода", "ice" to "лед",
-        "milk" to "молоко", "cream" to "сливки", "butter" to "сливочное масло",
-        "yogurt" to "йогурт", "yoghurt" to "йогурт", "kefir" to "кефир", "cheese" to "сыр",
-        "parmesan" to "Пармезан", "mozzarella" to "Моцарелла", "cheddar" to "Чеддер",
-        "ricotta" to "Рикотта", "mascarpone" to "Маскарпоне", "tofu" to "сыр тофу",
-        "eggs" to "яйца", "egg" to "яйцо", "yolk" to "желток", "yolks" to "желтки",
-        "flour" to "мука", "sugar" to "сахар", "salt" to "соль", "pepper" to "перец",
-        "honey" to "мёд", "syrup" to "сироп", "jam" to "джем", "chocolate" to "шоколад",
-        "cocoa" to "какао", "yeast" to "дрожжи", "gelatin" to "желатин", "starch" to "крахмал",
-        "rice" to "рис", "pasta" to "паста", "spaghetti" to "спагетти", "macaroni" to "макароны",
-        "noodles" to "лапша", "noodle" to "лапша", "penne" to "пенне", "lasagne" to "лазанья",
-        "lasagna" to "лазанья", "oats" to "овсяные хлопья", "oatmeal" to "овсянка",
-        "couscous" to "кускус", "quinoa" to "киноа", "bulgur" to "булгур", "bread" to "хлеб",
-        "baguette" to "багет", "tortillas" to "лепешки тортильи", "tortilla" to "тортилья",
-        "pita" to "пита", "dough" to "тесто", "pastry" to "слоеное тесто",
-        "crumbs" to "крошка", "cracker" to "крекер", "crackers" to "крекеры",
-        "apple" to "яблоко", "apples" to "яблоки", "banana" to "банан", "bananas" to "бананы",
-        "lemon" to "лимон", "lemons" to "лимоны", "lime" to "лайм", "limes" to "лаймы",
-        "orange" to "апельсин", "oranges" to "апельсины", "peach" to "персик", "pear" to "груша",
-        "pineapple" to "ананас", "mango" to "манго", "strawberries" to "клубника",
-        "strawberry" to "клубника", "raspberries" to "малина", "blueberries" to "черника",
-        "berries" to "ягоды", "cherries" to "вишня", "grapes" to "виноград", "raisins" to "изюм",
-        "walnuts" to "грецкие орехи", "walnut" to "грецкий орех", "almonds" to "миндаль",
-        "almond" to "миндаль", "hazelnuts" to "фундук", "peanuts" to "арахис",
-        "cashews" to "кешью", "pistachios" to "фисташки", "pecans" to "пекан", "nuts" to "орехи",
-        "coconut" to "кокос", "oil" to "растительное масло",
-        "cups" to "стакана", "cup" to "стакан", "tablespoons" to "ст.л.", "tablespoon" to "ст.л.",
-        "tbsp" to "ст.л.", "tbs" to "ст.л.", "teaspoons" to "ч.л.", "teaspoon" to "ч.л.",
-        "tsp" to "ч.л.", "ounces" to "унц.", "ounce" to "унц.", "oz" to "унц.",
-        "pounds" to "фунт.", "pound" to "фунт.", "lb" to "фунт.", "lbs" to "фунт.",
-        "grams" to "г", "gram" to "г", "kilograms" to "кг", "milliliters" to "мл",
-        "liters" to "л", "litre" to "л", "litres" to "л", "pint" to "пинта",
-        "pinch" to "щепотка", "dash" to "щепотка", "handful" to "горсть", "bunch" to "пучок",
-        "slice" to "ломтик", "slices" to "ломтика", "piece" to "кусочек", "pieces" to "кусочка",
-        "can" to "банка", "tin" to "банка", "jar" to "баночка", "packet" to "упаковка",
-        "package" to "упаковка", "pkg" to "уп.", "sprig" to "веточка", "sprigs" to "веточки",
-        "stalk" to "стебель", "stalks" to "стебля", "head" to "головка", "fillet" to "филе",
-        "fillets" to "филе", "breast" to "грудка", "thighs" to "бедра", "wings" to "крылышки",
-        "large" to "крупный", "medium" to "средний", "small" to "мелкий", "fresh" to "свежий",
-        "dried" to "сушеный", "dry" to "сухой", "frozen" to "замороженный", "canned" to "консервированный",
-        "smoked" to "копченый", "salted" to "соленый", "unsalted" to "несоленый",
-        "sweet" to "сладкий", "hot" to "острый", "spicy" to "пряный", "warm" to "теплый",
-        "cold" to "холодный", "boiling" to "кипящий", "melted" to "растопленный",
-        "softened" to "размягченный", "chopped" to "нарезанный", "diced" to "нарезанный кубиками",
-        "sliced" to "нарезанный ломтиками", "minced" to "измельченный", "grated" to "тертый",
-        "shredded" to "нашинкованный", "crushed" to "раздавленный", "peeled" to "очищенный",
-        "beaten" to "взбитый", "mashed" to "размятый", "roasted" to "запеченный",
-        "fried" to "обжаренный", "boiled" to "отварной", "baked" to "печеный",
-        "cooked" to "готовый", "raw" to "сырой", "whole" to "целый", "halved" to "разрезанный пополам",
-        "quartered" to "разрезанный на четвертинки", "finely" to "мелко", "roughly" to "крупно",
-        "thinly" to "тонко", "optional" to "по желанию",
-        "preheat" to "разогрейте", "heat" to "нагрейте", "boil" to "варите", "simmer" to "томите",
-        "fry" to "обжарьте", "saute" to "обжарьте", "bake" to "выпекайте", "roast" to "запекайте",
-        "grill" to "обжарьте на гриле", "steam" to "готовьте на пару", "mix" to "смешайте",
-        "stir" to "перемешайте", "whisk" to "взбейте венчиком", "beat" to "взбейте",
-        "blend" to "измельчите блендером", "chop" to "нарежьте", "slice" to "нарежьте ломтиками",
-        "dice" to "нарежьте кубиками", "peel" to "очистите", "grate" to "натрите на терке",
-        "pour" to "влейте", "add" to "добавьте", "place" to "поместите", "put" to "положите",
-        "remove" to "выньте", "drain" to "слейте жидкость", "strain" to "процедите",
-        "cover" to "накройте крышкой", "season" to "приправьте", "sprinkle" to "посыпьте",
-        "garnish" to "украсьте", "serve" to "подавайте", "cook" to "готовьте",
-        "leave" to "оставьте", "let" to "дайте", "cool" to "остудите", "chill" to "охладите",
-        "oven" to "духовка", "pan" to "сковорода", "skillet" to "сковорода", "pot" to "кастрюля",
-        "saucepan" to "сотейник", "bowl" to "миска", "plate" to "тарелка", "dish" to "блюдо",
-        "knife" to "нож", "spoon" to "ложка", "fork" to "вилка", "lid" to "крышка",
-        "minutes" to "минут", "minute" to "минуту", "mins" to "минут", "min" to "мин",
-        "hours" to "часа", "hour" to "час", "seconds" to "секунд", "until" to "до",
-        "tender" to "мягкости", "golden" to "золотистости", "brown" to "румяности",
-        "with" to "с", "and" to "и", "or" to "или", "in" to "в", "on" to "на", "for" to "в течение",
-        "over" to "на", "into" to "в", "from" to "из", "then" to "затем", "after" to "после"
+        "graham cracker crumbs" to "крошка песочного печенья", "graham crackers" to "песочное печенье", "graham cracker" to "песочное печенье",
+        "digestive biscuits" to "песочное печенье", "evaporated milk" to "концентрированное молоко", "condensed milk" to "сгущенное молоко",
+        "extra virgin olive oil" to "оливковое масло", "sunflower oil" to "подсолнечное масло", "vegetable oil" to "растительное масло",
+        "sesame seed oil" to "кунжутное масло", "sesame oil" to "кунжутное масло", "coconut oil" to "кокосовое масло", "olive oil" to "оливковое масло",
+        "unsalted butter" to "сливочное масло", "salted butter" to "сливочное масло", "melted butter" to "растопленное масло",
+        "chicken breast" to "куриная грудка", "chicken breasts" to "куриные грудки", "chicken thighs" to "куриные бедра", "chicken wings" to "куриные крылышки",
+        "chicken stock" to "куриный бульон", "chicken broth" to "куриный бульон", "beef stock" to "говяжий бульон", "vegetable stock" to "овощной бульон",
+        "minced beef" to "говяжий фарш", "ground beef" to "говяжий фарш", "minced pork" to "свиной фарш", "ground pork" to "свиной фарш",
+        "heavy cream" to "жирные сливки", "double cream" to "сливки", "single cream" to "сливки", "sour cream" to "сметана", "cream cheese" to "сливочный сыр",
+        "cheddar cheese" to "сыр Чеддер", "parmesan cheese" to "сыр Пармезан", "mozzarella cheese" to "сыр Моцарелла", "feta cheese" to "сыр Фета",
+        "spring onions" to "зеленый лук", "spring onion" to "зеленый лук", "green onions" to "зеленый лук", "red onion" to "красный лук",
+        "garlic cloves" to "зубчики чеснока", "garlic clove" to "зубчик чеснока", "cloves garlic" to "зубчика чеснока", "garlic powder" to "сушеный чеснок",
+        "cherry tomatoes" to "томаты черри", "chopped tomatoes" to "рубленые томаты", "tomato puree" to "томатное пюре", "tomato paste" to "томатная паста",
+        "tomato sauce" to "томатный соус", "soy sauce" to "соевый соус", "fish sauce" to "рыбный соус", "oyster sauce" to "устричный соус",
+        "worcestershire sauce" to "вустерский соус", "hot sauce" to "острый соус", "white wine vinegar" to "белый винный уксус", "apple cider vinegar" to "яблочный уксус",
+        "balsamic vinegar" to "бальзамический уксус", "rice vinegar" to "рисовый уксус", "lemon juice" to "лимонный сок", "lime juice" to "сок лайма",
+        "all-purpose flour" to "пшеничная мука", "plain flour" to "пшеничная мука", "self-raising flour" to "мука с разрыхлителем", "cornstarch" to "кукурузный крахмал",
+        "corn flour" to "кукурузный крахмал", "baking powder" to "разрыхлитель", "baking soda" to "сода", "bicarbonate of soda" to "сода",
+        "caster sugar" to "мелкий сахар", "brown sugar" to "коричневый сахар", "icing sugar" to "сахарная пудра", "powdered sugar" to "сахарная пудра",
+        "vanilla extract" to "ванильный экстракт", "black pepper" to "черный перец", "cayenne pepper" to "кайенский перец", "chili powder" to "порошок чили",
+        "bell pepper" to "болгарский перец", "sweet potatoes" to "батат", "bay leaf" to "лавровый лист", "bay leaves" to "лавровый лист",
+        "egg yolks" to "яичные желтки", "egg yolk" to "желток", "egg whites" to "яичные белки", "coconut milk" to "кокосовое молоко",
+        "bread crumbs" to "панировочные сухари", "breadcrumbs" to "панировочные сухари", "sesame seeds" to "кунжут", "peanut butter" to "арахисовая паста",
+        "to taste" to "по вкусу", "for garnish" to "для украшения", "to serve" to "для подачи", "finely chopped" to "мелко нарезанный", "thinly sliced" to "тонко нарезанный",
+        "preheat the oven" to "разогрейте духовку", "medium heat" to "средний огонь", "golden brown" to "золотистая корочка", "frying pan" to "сковорода",
+        "chicken" to "курица", "beef" to "говядина", "pork" to "свинина", "lamb" to "баранина", "turkey" to "индейка", "duck" to "утка", "bacon" to "бекон",
+        "sausage" to "колбаски", "ham" to "ветчина", "meat" to "мясо", "mince" to "фарш", "salmon" to "лосось", "tuna" to "тунец", "cod" to "треска", "fish" to "рыба",
+        "shrimp" to "креветки", "prawns" to "креветки", "prawn" to "креветка", "seafood" to "морепродукты", "potatoes" to "картофель", "potato" to "картофель",
+        "carrots" to "морковь", "carrot" to "морковь", "onions" to "лук", "onion" to "лук", "shallots" to "лук-шалот", "leek" to "лук-порей",
+        "garlic" to "чеснок", "ginger" to "имбирь", "tomatoes" to "томаты", "tomato" to "томат", "cucumber" to "огурец", "cabbage" to "капуста",
+        "broccoli" to "брокколи", "cauliflower" to "цветная капуста", "spinach" to "шпинат", "lettuce" to "салат", "celery" to "сельдерей",
+        "zucchini" to "кабачок", "courgette" to "кабачок", "eggplant" to "баклажан", "aubergine" to "баклажан", "pumpkin" to "тыква",
+        "mushrooms" to "грибы", "mushroom" to "грибы", "peas" to "горошек", "beans" to "фасоль", "lentils" to "чечевица", "chickpeas" to "нут", "corn" to "кукуруза",
+        "avocado" to "авокадо", "olives" to "оливки", "beetroot" to "свекла", "peppers" to "перец", "parsley" to "петрушка", "cilantro" to "кинза",
+        "coriander" to "кориандр", "dill" to "укроп", "basil" to "базилик", "mint" to "мята", "rosemary" to "розмарин", "thyme" to "тимьян", "oregano" to "орегано",
+        "paprika" to "паприка", "cumin" to "зира", "turmeric" to "куркума", "cinnamon" to "корица", "nutmeg" to "мускатный орех", "cloves" to "зубчика",
+        "clove" to "зубчик", "cardamom" to "кардамон", "vanilla" to "ваниль", "curry" to "карри", "chili" to "чили", "chilli" to "чили", "mustard" to "горчица",
+        "mayonnaise" to "майонез", "ketchup" to "кетчуп", "vinegar" to "уксус", "sauce" to "соус", "paste" to "паста", "stock" to "бульон", "broth" to "бульон",
+        "water" to "вода", "milk" to "молоко", "cream" to "сливки", "butter" to "сливочное масло", "yogurt" to "йогурт", "cheese" to "сыр", "parmesan" to "Пармезан",
+        "mozzarella" to "Моцарелла", "cheddar" to "Чеддер", "ricotta" to "Рикотта", "mascarpone" to "Маскарпоне", "tofu" to "сыр тофу", "eggs" to "яйца", "egg" to "яйцо",
+        "yolk" to "желток", "yolks" to "желтки", "flour" to "мука", "sugar" to "сахар", "salt" to "соль", "pepper" to "перец", "honey" to "мёд", "syrup" to "сироп",
+        "chocolate" to "шоколад", "cocoa" to "какао", "yeast" to "дрожжи", "starch" to "крахмал", "rice" to "рис", "pasta" to "паста", "spaghetti" to "спагетти",
+        "noodles" to "лапша", "noodle" to "лапша", "lasagne" to "лазанья", "oats" to "овсянка", "bread" to "хлеб", "baguette" to "багет", "tortillas" to "тортильи",
+        "dough" to "тесто", "pastry" to "тесто", "crumbs" to "крошка", "apple" to "яблоко", "apples" to "яблоки", "banana" to "банан", "lemon" to "лимон",
+        "lime" to "лайм", "orange" to "апельсин", "strawberries" to "клубника", "berries" to "ягоды", "raisins" to "изюм", "walnuts" to "грецкие орехи",
+        "almonds" to "миндаль", "peanuts" to "арахис", "cashews" to "кешью", "nuts" to "орехи", "coconut" to "кокос", "oil" to "масло",
+        "cups" to "стакана", "cup" to "стакан", "tbsp" to "ст.л.", "tbs" to "ст.л.", "tsp" to "ч.л.", "oz" to "унц.", "lb" to "фунт.", "grams" to "г", "gram" to "г",
+        "pinch" to "щепотка", "dash" to "щепотка", "handful" to "горсть", "bunch" to "пучок", "slice" to "ломтик", "slices" to "ломтика", "piece" to "кусочек",
+        "pieces" to "кусочка", "can" to "банка", "tin" to "банка", "packet" to "уп.", "pkg" to "уп.", "fillet" to "филе", "breast" to "грудка", "thighs" to "бедра",
+        "large" to "крупный", "medium" to "средний", "small" to "мелкий", "fresh" to "свежий", "dried" to "сушеный", "frozen" to "замороженный", "smoked" to "копченый",
+        "sweet" to "сладкий", "hot" to "острый", "spicy" to "пряный", "warm" to "теплый", "cold" to "холодный", "boiling" to "кипящий", "melted" to "растопленный",
+        "chopped" to "нарезанный", "diced" to "кубиками", "sliced" to "ломтиками", "minced" to "измельченный", "grated" to "тертый", "crushed" to "раздавленный",
+        "peeled" to "очищенный", "beaten" to "взбитый", "mashed" to "размятый", "roasted" to "запеченный", "fried" to "обжаренный", "boiled" to "отварной",
+        "cooked" to "готовый", "whole" to "целый", "halved" to "пополам", "finely" to "мелко", "optional" to "по желанию",
+        "preheat" to "разогрейте", "heat" to "нагрейте", "boil" to "варите", "simmer" to "томите", "fry" to "обжарьте", "saute" to "обжарьте", "bake" to "выпекайте",
+        "roast" to "запекайте", "mix" to "смешайте", "stir" to "перемешайте", "whisk" to "взбейте", "beat" to "взбейте", "chop" to "нарежьте", "peel" to "очистите",
+        "grate" to "натрите", "pour" to "влейте", "add" to "добавьте", "place" to "положите", "put" to "положите", "remove" to "выньте", "drain" to "слейте",
+        "cover" to "накройте", "season" to "приправьте", "sprinkle" to "посыпьте", "garnish" to "украсьте", "serve" to "подавайте", "cook" to "готовьте",
+        "leave" to "оставьте", "cool" to "остудите", "oven" to "духовка", "pan" to "сковорода", "pot" to "кастрюля", "bowl" to "миска", "plate" to "тарелка",
+        "minutes" to "минут", "minute" to "минуту", "mins" to "минут", "min" to "мин", "hours" to "часа", "hour" to "час", "seconds" to "секунд", "until" to "до",
+        "tender" to "мягкости", "golden" to "золотистости", "with" to "с", "and" to "и", "or" to "или", "in" to "в", "on" to "на", "for" to "в течение", "then" to "затем"
     ).sortedByDescending { it.first.length }
         .map { (en, ru) -> Regex("(?i)(?<![a-zA-Z])${Regex.escape(en)}(?![a-zA-Z])") to ru }
 
@@ -1031,25 +631,20 @@ object CulinaryUtils {
     fun normalizeAndTranslateCulinary(text: String): String {
         var res = text.trim()
         if (res.isEmpty()) return res
-        for ((regex, replacement) in UNIT_PRE_REPLACEMENTS) {
-            res = regex.replace(res, replacement)
-        }
+        for ((regex, replacement) in UNIT_PRE_REPLACEMENTS) res = regex.replace(res, replacement)
         if (!hasLatin(res)) return res
         for ((regex, ru) in CULINARY_DICTIONARY) {
             res = regex.replace(res, ru)
             if (!hasLatin(res)) break
         }
-        return res.replace(Regex("(?i)\\b(the|a|an|of|to)\\b"), " ")
-            .replace(Regex("\\s{2,}"), " ")
-            .trim()
+        return res.replace(Regex("(?i)\\b(the|a|an|of|to)\\b"), " ").replace(Regex("\\s{2,}"), " ").trim()
     }
 
     fun computeFridgeStems(fridgeItems: List<String>): Set<String> {
         if (fridgeItems.isEmpty()) return emptySet()
         return fridgeItems.mapNotNull { item ->
             val clean = item.trim().lowercase()
-            if (clean.isEmpty()) null
-            else when {
+            if (clean.isEmpty()) null else when {
                 clean.length >= 5 -> clean.dropLast(2)
                 clean.length == 4 -> clean.dropLast(1)
                 else -> clean
@@ -1089,18 +684,14 @@ object CulinaryUtils {
 
     fun humanizeCookingText(text: String): String {
         var result = text
-        for ((regex, replacement) in SPEECH_REPLACEMENTS) {
-            result = regex.replace(result, replacement)
-        }
+        for ((regex, replacement) in SPEECH_REPLACEMENTS) result = regex.replace(result, replacement)
         return result.replace("°C", " градусов Цельсия").replace("°", " градусов").replace(" - ", " — ")
     }
 
-    fun splitSentences(text: String): List<String> =
-        text.split(SENTENCE_SPLIT_REGEX).map { it.trim() }.filter { it.isNotBlank() }
+    fun splitSentences(text: String): List<String> = text.split(SENTENCE_SPLIT_REGEX).map { it.trim() }.filter { it.isNotBlank() }
 
     fun ensureValidInstructions(rawSteps: List<String>, title: String, ingredients: List<String>): List<String> {
-        val cleaned = rawSteps
-            .flatMap { it.split(STEP_SPLIT_REGEX) }
+        val cleaned = rawSteps.flatMap { it.split(STEP_SPLIT_REGEX) }
             .map { normalizeAndTranslateCulinary(it.replace(STEP_PREFIX_REGEX, "").trim()) }
             .filter { it.length > 6 && !it.lowercase().startsWith("приятного аппетита") }
         if (cleaned.size >= 2) return cleaned
@@ -1113,18 +704,15 @@ object CulinaryUtils {
         )
     }
 
-    fun parseVoiceCommand(spokenText: String, currentCuisine: String, currentCategory: String): Triple<String, String, List<String>> {
+    fun parseVoiceCommand(spokenText: String, currentCuisine: String, currentCategory: String): Triple<String, List<String String,>> {
         val lower = spokenText.lowercase()
         var newCuisine = currentCuisine
         var newCategory = currentCategory
-
         val cuisineRoots = mapOf(
-            "русск" to "Русская", "корейск" to "Корейская", "французск" to "Французская",
-            "итальянск" to "Итальянская", "японск" to "Японская", "грузинск" to "Грузинская",
-            "мексиканск" to "Мексиканская", "китайск" to "Китайская", "тайск" to "Тайская", "индийск" to "Индийская"
+            "русск" to "Русская", "корейск" to "Корейская", "французск" to "Французская", "итальянск" to "Итальянская",
+            "японск" to "Японская", "грузинск" to "Грузинская", "мексиканск" to "Мексиканская", "китайск" to "Китайская", "тайск" to "Тайская", "индийск" to "Индийская"
         )
         cuisineRoots.forEach { (root, name) -> if (lower.contains(root)) newCuisine = name }
-
         val categoryRoots = mapOf(
             "суп" to "Супы", "бульон" to "Супы", "каш" to "Каши и завтраки", "завтрак" to "Каши и завтраки",
             "выпечк" to "Выпечка", "пирог" to "Выпечка", "к чаю" to "Что-то к чаю", "десерт" to "Что-то к чаю",
@@ -1132,33 +720,16 @@ object CulinaryUtils {
             "второе" to "Вторые блюда", "ужин" to "Вторые блюда"
         )
         categoryRoots.forEach { (root, name) -> if (lower.contains(root)) newCategory = name }
-
-        val stopWords = setOf(
-            "приготовь", "приготовить", "сделай", "сделать", "подбери", "подобрать", "найди", "найти",
-            "покажи", "хочу", "блюдо", "блюда", "рецепт", "рецепты", "из", "с", "со", "у", "меня",
-            "есть", "в", "холодильнике", "дома", "и", "а", "или", "что", "нибудь", "мне", "пожалуйста",
-            "на", "обед", "ужин", "завтрак", "суп", "салат", "второе", "десерт", "выпечка", "каша"
-        )
-
+        val stopWords = setOf("приготовь", "приготовить", "сделай", "подбери", "найди", "покажи", "хочу", "блюдо", "рецепт", "из", "у", "меня", "есть", "в", "холодильнике", "дома", "или", "мне", "пожалуйста", "на", "обед", "ужин", "завтрак", "суп", "салат")
         val normalizeMap = mapOf(
-            "курицы" to "Курица", "курицу" to "Курица", "курочки" to "Курица", "курицей" to "Курица",
-            "картошки" to "Картофель", "картошка" to "Картофель", "картофеля" to "Картофель", "картошкой" to "Картофель",
-            "сыра" to "Сыр", "сыром" to "Сыр", "яиц" to "Яйца", "яйцо" to "Яйца", "яйцами" to "Яйца",
-            "молока" to "Молоко", "молоком" to "Молоко", "риса" to "Рис", "рисом" to "Рис",
-            "грибов" to "Грибы", "грибами" to "Грибы", "помидоров" to "Томаты", "помидоры" to "Томаты",
-            "фарша" to "Фарш", "фаршем" to "Фарш", "творога" to "Творог", "творогом" to "Творог",
-            "капусты" to "Капуста", "капустой" to "Капуста", "говядины" to "Говядина", "свинины" to "Свинина"
+            "курицы" to "Курица", "курицу" to "Курица", "курочки" to "Курица", "картошки" to "Картофель", "картошка" to "Картофель",
+            "сыра" to "Сыр", "яиц" to "Яйца", "яйцо" to "Яйца", "молока" to "Молоко", "риса" to "Рис", "грибов" to "Грибы",
+            "помидоров" to "Томаты", "помидоры" to "Томаты", "фарша" to "Фарш", "творога" to "Творог", "капусты" to "Капуста", "говядины" to "Говядина", "свинины" to "Свинина"
         )
-
-        val extracted = lower
-            .replace(NON_WORD_REGEX, " ")
-            .split(WHITESPACE_REGEX)
-            .map { it.trim() }
+        val extracted = lower.replace(NON_WORD_REGEX, " ").split(WHITESPACE_REGEX).map { it.trim() }
             .filter { it.length > 2 && !stopWords.contains(it) }
             .filter { w -> cuisineRoots.keys.none { w.startsWith(it) } }
-            .map { w -> normalizeMap[w] ?: w.replaceFirstChar { it.uppercase() } }
-            .distinct()
-
+            .map { w -> normalizeMap[w] ?: w.replaceFirstChar { it.uppercase() } }.distinct()
         return Triple(newCuisine, newCategory, extracted)
     }
 
@@ -1166,15 +737,13 @@ object CulinaryUtils {
         try {
             val toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
             toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 1500)
-            Handler(Looper.getMainLooper()).postDelayed({
-                try { toneGen.release() } catch (_: Exception) {}
-            }, 1600L)
+            Handler(Looper.getMainLooper()).postDelayed({ try { toneGen.release() } catch (_: Exception) {} }, 1600L)
         } catch (_: Exception) {}
     }
 }
 
 // =========================================================================
-// 5. АСИНХРОННЫЙ МЕНЕДЖЕР ХРАНИЛИЩА + ДИСКОВЫЙ КЭШ ПЕРЕВОДОВ
+// ХРАНИЛИЩЕ И ГОЛОСОВОЙ ДВИЖОК
 // =========================================================================
 class RecipeStorage(context: Context) {
     private val prefs = context.getSharedPreferences("chef_app_v10_storage", Context.MODE_PRIVATE)
@@ -1185,70 +754,42 @@ class RecipeStorage(context: Context) {
         if (!cachedTransJson.isNullOrBlank()) {
             try {
                 val obj = JSONObject(cachedTransJson)
-                val keys = obj.keys()
-                while (keys.hasNext()) {
-                    val k = keys.next()
-                    RecipeRepository.putCachedTranslation(k, obj.getString(k))
-                }
+                obj.keys().forEach { k -> RecipeRepository.putCachedTranslation(k, obj.getString(k)) }
             } catch (_: Exception) {}
         }
     }
 
-    fun isDarkTheme(systemDefault: Boolean): Boolean =
-        if (prefs.contains("dark_mode")) prefs.getBoolean("dark_mode", systemDefault) else systemDefault
-
-    fun saveDarkTheme(enabled: Boolean) {
-        prefs.edit().putBoolean("dark_mode", enabled).apply()
-    }
-
-    fun loadGitHubRepo(): String =
-        prefs.getString("github_repo_path", DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
-
-    fun saveGitHubRepo(repo: String) {
-        prefs.edit().putString("github_repo_path", repo.trim()).apply()
-    }
-
-    fun loadStringSet(key: String): List<String> =
-        prefs.getStringSet(key, emptySet())?.toList() ?: emptyList()
+    fun isDarkTheme(systemDefault: Boolean): Boolean = if (prefs.contains("dark_mode")) prefs.getBoolean("dark_mode", systemDefault) else systemDefault
+    fun saveDarkTheme(enabled: Boolean) = prefs.edit().putBoolean("dark_mode", enabled).apply()
+    fun loadGitHubRepo(): String = prefs.getString("github_repo_path", DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
+    fun saveGitHubRepo(repo: String) = prefs.edit().putString("github_repo_path", repo.trim()).apply()
+    fun loadStringSet(key: String): List<String> = prefs.getStringSet(key, emptySet())?.toList() ?: emptyList()
 
     fun loadRecipeList(key: String): List<Recipe> {
         val raw = prefs.getString(key, null) ?: return emptyList()
         return try {
             val arr = JSONArray(raw)
             List(arr.length()) { Recipe.fromJson(arr.getJSONObject(it)) }
-        } catch (_: Exception) {
-            emptyList()
-        }
+        } catch (_: Exception) { emptyList() }
     }
 
     fun saveAllAsync(fridge: List<String>, cart: List<String>, favorites: List<Recipe>, customRecipes: List<Recipe>) {
-        val fridgeCopy = fridge.toSet()
-        val cartCopy = cart.toSet()
-        val favCopy = favorites.toList()
-        val customCopy = customRecipes.toList()
-
+        val fridgeCopy = fridge.toSet(); val cartCopy = cart.toSet()
+        val favCopy = favorites.toList(); val customCopy = customRecipes.toList()
         ioScope.launch {
             val favArr = JSONArray().apply { favCopy.forEach { put(it.toJson()) } }
             val customArr = JSONArray().apply { customCopy.forEach { put(it.toJson()) } }
             val transObj = JSONObject(RecipeRepository.exportTranslationCacheSnapshot())
             prefs.edit()
-                .putStringSet("fridge", fridgeCopy)
-                .putStringSet("cart", cartCopy)
+                .putStringSet("fridge", fridgeCopy).putStringSet("cart", cartCopy)
                 .putString("fav_recipes_json", favArr.toString())
                 .putString("custom_recipes_json", customArr.toString())
-                .putString("translation_cache_json", transObj.toString())
-                .apply()
+                .putString("translation_cache_json", transObj.toString()).apply()
         }
     }
 }
 
-// =========================================================================
-// 6. КОНТРОЛЛЕР ГОЛОСОВОЙ ОЗВУЧКИ
-// =========================================================================
-class SpeechManager(
-    private val context: Context,
-    private val onSpeakingStateChanged: (String?) -> Unit
-) {
+class SpeechManager(private val context: Context, private val onSpeakingStateChanged: (String?) -> Unit) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var ttsEngine: TextToSpeech? = null
     private var availableRuVoices: List<Voice> = emptyList()
@@ -1264,50 +805,28 @@ class SpeechManager(
                 if (res != TextToSpeech.LANG_MISSING_DATA && res != TextToSpeech.LANG_NOT_SUPPORTED) {
                     isSystemTtsReady = true
                     try {
-                        val voices = ttsEngine?.voices
-                            ?.filter { it.locale.language.equals("ru", ignoreCase = true) }
+                        val voices = ttsEngine?.voices?.filter { it.locale.language.equals("ru", ignoreCase = true) }
                             ?.sortedWith(
                                 compareByDescending<Voice> { it.name.contains("network", ignoreCase = true) }
                                     .thenByDescending { it.name.contains("ruf", ignoreCase = true) || it.name.contains("rud", ignoreCase = true) }
                                     .thenByDescending { it.quality }
                             ) ?: emptyList()
-                        if (voices.isNotEmpty()) {
-                            availableRuVoices = voices
-                            ttsEngine?.voice = voices[0]
-                        }
+                        if (voices.isNotEmpty()) { availableRuVoices = voices; ttsEngine?.voice = voices[0] }
                     } catch (_: Exception) {}
-
-                    ttsEngine?.setSpeechRate(0.98f)
-                    ttsEngine?.setPitch(0.98f)
+                    ttsEngine?.setSpeechRate(0.98f); ttsEngine?.setPitch(0.98f)
                     ttsEngine?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) {
-                            val root = utteranceId?.substringBefore("__part_")
-                            mainHandler.post { updateState(root) }
-                        }
-                        override fun onDone(utteranceId: String?) {
-                            if (utteranceId != null && utteranceId.endsWith("_last")) {
-                                mainHandler.post { updateState(null) }
-                            }
-                        }
+                        override fun onStart(utteranceId: String?) { mainHandler.post { updateState(utteranceId?.substringBefore("__part_")) } }
+                        override fun onDone(utteranceId: String?) { if (utteranceId?.endsWith("_last") == true) mainHandler.post { updateState(null) } }
                         @Deprecated("Deprecated in Java")
-                        override fun onError(utteranceId: String?) {
-                            mainHandler.post { updateState(null) }
-                        }
+                        override fun onError(utteranceId: String?) { mainHandler.post { updateState(null) } }
                     })
                 }
             }
         }
-        ttsEngine = try {
-            TextToSpeech(context, initListener, "com.google.android.tts")
-        } catch (_: Exception) {
-            TextToSpeech(context, initListener)
-        }
+        ttsEngine = try { TextToSpeech(context, initListener, "com.google.android.tts") } catch (_: Exception) { TextToSpeech(context, initListener) }
     }
 
-    private fun updateState(newRootId: String?) {
-        currentRootId = newRootId
-        onSpeakingStateChanged(newRootId)
-    }
+    private fun updateState(newRootId: String?) { currentRootId = newRootId; onSpeakingStateChanged(newRootId) }
 
     fun stop() {
         updateState(null)
@@ -1326,27 +845,19 @@ class SpeechManager(
             Toast.makeText(context, "🎙 Голос #${selectedVoiceIndex + 1} ($voiceType)", Toast.LENGTH_SHORT).show()
             val params = Bundle().apply { putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "sample_last") }
             engine.speak("Привет! Я ваш шеф-повар.", TextToSpeech.QUEUE_FLUSH, params, "sample_last")
-        } else {
-            Toast.makeText(context, "Доступен 1 системный голосовой профиль", Toast.LENGTH_SHORT).show()
-        }
+        } else Toast.makeText(context, "Доступен 1 системный голосовой профиль", Toast.LENGTH_SHORT).show()
     }
 
     fun speak(rootUtteranceId: String, rawText: String) {
-        if (currentRootId == rootUtteranceId) {
-            stop()
-            return
-        }
+        if (currentRootId == rootUtteranceId) { stop(); return }
         stop()
-
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
         if (audioManager != null && audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) == 0) {
-            Toast.makeText(context, "🔊 Прибавьте громкость мультимедиа на телефоне!", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, "🔊 Прибавьте громкость мультимедиа!", Toast.LENGTH_LONG).show()
         }
-
         val preparedText = CulinaryUtils.humanizeCookingText(rawText)
         val sentences = CulinaryUtils.splitSentences(preparedText).ifEmpty { listOf(preparedText) }
         updateState(rootUtteranceId)
-
         val engine = ttsEngine
         if (isSystemTtsReady && engine != null) {
             var spokeOk = false
@@ -1355,9 +866,7 @@ class SpeechManager(
                 val suffix = if (idx == sentences.lastIndex) "_last" else "_$idx"
                 val partId = "${rootUtteranceId}__part$suffix"
                 val params = Bundle().apply { putString(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, partId) }
-                if (engine.speak(sentence, queueMode, params, partId) == TextToSpeech.SUCCESS) {
-                    spokeOk = true
-                }
+                if (engine.speak(sentence, queueMode, params, partId) == TextToSpeech.SUCCESS) spokeOk = true
             }
             if (spokeOk) return
         }
@@ -1365,30 +874,20 @@ class SpeechManager(
     }
 
     private fun playCloudChunksSequentially(rootId: String, chunks: List<String>, index: Int) {
-        if (currentRootId != rootId || index >= chunks.size) {
-            if (currentRootId == rootId) updateState(null)
-            return
-        }
+        if (currentRootId != rootId || index >= chunks.size) { if (currentRootId == rootId) updateState(null); return }
         try {
             val encoded = URLEncoder.encode(chunks[index].take(180), "UTF-8")
             val streamUrl = "https://translate.googleapis.com/translate_tts?ie=UTF-8&client=tw-ob&tl=ru&q=$encoded"
             mediaPlayer?.release()
             mediaPlayer = MediaPlayer().apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .build()
-                )
+                setAudioAttributes(AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).setUsage(AudioAttributes.USAGE_MEDIA).build())
                 setDataSource(streamUrl)
                 setOnPreparedListener { start() }
                 setOnCompletionListener { playCloudChunksSequentially(rootId, chunks, index + 1) }
                 setOnErrorListener { _, _, _ -> updateState(null); true }
                 prepareAsync()
             }
-        } catch (_: Exception) {
-            updateState(null)
-        }
+        } catch (_: Exception) { updateState(null) }
     }
 
     fun release() {
@@ -1399,7 +898,7 @@ class SpeechManager(
 }
 
 // =========================================================================
-// 7. ACTIVITY И ОБРАБОТЧИК УСТАНОВКИ ОБНОВЛЕНИЙ APK
+// ACTIVITY И UI ЭКРАНЫ
 // =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1416,10 +915,7 @@ class MainActivity : ComponentActivity() {
                     RecipeAppScreen(
                         storage = storage,
                         isDarkTheme = isDarkTheme,
-                        onToggleDarkTheme = {
-                            isDarkTheme = !isDarkTheme
-                            storage.saveDarkTheme(isDarkTheme)
-                        }
+                        onToggleDarkTheme = { isDarkTheme = !isDarkTheme; storage.saveDarkTheme(isDarkTheme) }
                     )
                 }
             }
@@ -1441,48 +937,24 @@ class MainActivity : ComponentActivity() {
                     val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                     if (confirmIntent != null) startActivity(confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
-                PackageInstaller.STATUS_SUCCESS -> {
-                    Toast.makeText(this, "✅ Обновление до $CURRENT_APP_VERSION успешно установлено!", Toast.LENGTH_LONG).show()
-                }
-                PackageInstaller.STATUS_FAILURE_CONFLICT -> {
-                    AppUpdateManager.signatureConflictState = true
-                }
+                PackageInstaller.STATUS_SUCCESS -> Toast.makeText(this, "✅ Приложение успешно обновлено!", Toast.LENGTH_LONG).show()
+                PackageInstaller.STATUS_FAILURE_CONFLICT -> AppUpdateManager.signatureConflictState = true
                 else -> {
-                    if (msg.contains("INCOMPATIBLE", ignoreCase = true) || msg.contains("signature", ignoreCase = true)) {
-                        AppUpdateManager.signatureConflictState = true
-                    } else if (status != -1) {
-                        Toast.makeText(this, "Установка не завершена: $msg", Toast.LENGTH_LONG).show()
-                    }
+                    if (msg.contains("INCOMPATIBLE", true) || msg.contains("signature", true)) AppUpdateManager.signatureConflictState = true
+                    else if (status != -1) Toast.makeText(this, "Установка не завершена: $msg", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
 }
 
-// =========================================================================
-// 8. ГЛАВНЫЙ ЭКРАН (ВЕРСИЯ v1.1 С БЕЙДЖЕМ ВЕРСИИ, КНОПКОЙ 🎲 И KEEP-SCREEN-ON)
-// =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RecipeAppScreen(
-    storage: RecipeStorage,
-    isDarkTheme: Boolean,
-    onToggleDarkTheme: () -> Unit
-) {
+fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTheme: () -> Unit) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
     var currentlySpeakingId by remember { mutableStateOf<String?>(null) }
-    var runningTimersCount by remember { mutableIntStateOf(0) }
-
-    val keepScreenOn = currentlySpeakingId != null || runningTimersCount > 0
-    DisposableEffect(keepScreenOn) {
-        val window = (context as? Activity)?.window
-        if (keepScreenOn) window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        else window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
-    }
-
     val speechManager = remember(context) { SpeechManager(context) { newId -> currentlySpeakingId = newId } }
     DisposableEffect(speechManager) { onDispose { speechManager.release() } }
 
@@ -1523,9 +995,7 @@ fun RecipeAppScreen(
     val shoppingItemsSet by remember { derivedStateOf { shoppingListItems.toSet() } }
     val favoriteIdsSet by remember { derivedStateOf { favoriteRecipes.map { it.id }.toSet() } }
 
-    fun persistAll() {
-        storage.saveAllAsync(fridgeItems, shoppingListItems, favoriteRecipes, customUserRecipes)
-    }
+    fun persistAll() = storage.saveAllAsync(fridgeItems, shoppingListItems, favoriteRecipes, customUserRecipes)
 
     fun checkUpdatesNow(showToast: Boolean = false) {
         coroutineScope.launch {
@@ -1535,11 +1005,8 @@ fun RecipeAppScreen(
             isCheckingUpdate = false
             res.onSuccess { info ->
                 releaseInfo = info
-                if (info.isNewerThanInstalled) {
-                    Toast.makeText(context, "🚀 На GitHub доступна новая сборка (${info.publishedFormatted})!", Toast.LENGTH_LONG).show()
-                } else if (showToast) {
-                    Toast.makeText(context, "✅ У вас актуальная сборка ($CURRENT_APP_VERSION)", Toast.LENGTH_SHORT).show()
-                }
+                if (info.isNewerThanInstalled) Toast.makeText(context, "🚀 На GitHub доступна новая сборка (${info.publishedFormatted})!", Toast.LENGTH_LONG).show()
+                else if (showToast) Toast.makeText(context, "✅ У вас установлена самая свежая сборка", Toast.LENGTH_SHORT).show()
             }.onFailure { err ->
                 if (showToast) Toast.makeText(context, "Ошибка проверки GitHub: ${err.localizedMessage}", Toast.LENGTH_SHORT).show()
             }
@@ -1548,24 +1015,9 @@ fun RecipeAppScreen(
 
     LaunchedEffect(Unit) { checkUpdatesNow(showToast = false) }
 
-    var recipes by remember {
-        mutableStateOf(RecipeRepository.buildLocalDatabaseRecipes("Все", "Все", emptyList(), customUserRecipes, 10, 0))
-    }
+    var recipes by remember { mutableStateOf(RecipeRepository.buildLocalDatabaseRecipes("Все", "Все", emptyList(), customUserRecipes, 10, 0)) }
     var isLoading by remember { mutableStateOf(false) }
     var activeLoadJob by remember { mutableStateOf<Job?>(null) }
-
-    fun pickRandomLuckyDish() {
-        speechManager.stop()
-        showOnlyFavorites = false
-        searchQuery = ""
-        isFiltersExpanded = false
-        val allPool = customUserRecipes + RecipeRepository.getAllCuratedRecipes() + RecipeRepository.getCachedOnlineRecipes()
-        if (allPool.isNotEmpty()) {
-            val lucky = allPool.random()
-            recipes = listOf(lucky)
-            Toast.makeText(context, "🎲 Выбор Шефа: ${lucky.title}!", Toast.LENGTH_SHORT).show()
-        }
-    }
 
     fun loadRecipes(
         modeToUse: DataSourceMode = selectedMode,
@@ -1578,10 +1030,7 @@ fun RecipeAppScreen(
     ) {
         speechManager.stop()
         if (collapseHeader) isFiltersExpanded = false
-        if (forceNewBatch) {
-            refreshSeed += 1
-            selectedSort = SortOrder.FRESH_BATCH
-        }
+        if (forceNewBatch) { refreshSeed += 1; selectedSort = SortOrder.FRESH_BATCH }
         val currentSeed = refreshSeed
         val currentFridge = fridgeItems.toList()
         val currentCustom = customUserRecipes.toList()
@@ -1603,46 +1052,29 @@ fun RecipeAppScreen(
                 persistAll()
             } catch (_: Exception) {
                 recipes = RecipeRepository.buildLocalDatabaseRecipes(cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount, currentSeed)
-            } finally {
-                isLoading = false
-            }
+            } finally { isLoading = false }
         }
     }
 
     LaunchedEffect(searchQuery) {
         val q = searchQuery.trim()
-        if (q.length < 2) {
-            onlineSearchResults = emptyList()
-            isSearchingOnline = false
-            return@LaunchedEffect
-        }
+        if (q.length < 2) { onlineSearchResults = emptyList(); isSearchingOnline = false; return@LaunchedEffect }
         delay(400L)
         isSearchingOnline = true
-        try {
-            onlineSearchResults = RecipeRepository.searchGlobalOnlineRecipes(q)
-        } catch (_: Exception) {
-            onlineSearchResults = emptyList()
-        } finally {
-            isSearchingOnline = false
-        }
+        try { onlineSearchResults = RecipeRepository.searchGlobalOnlineRecipes(q) } catch (_: Exception) { onlineSearchResults = emptyList() }
+        finally { isSearchingOnline = false }
     }
 
     LaunchedEffect(selectedCuisine, selectedCategory, committedLimitCount, fridgeItems.size, customUserRecipes.size, selectedMode) {
         if (selectedMode == DataSourceMode.LOCAL) {
-            recipes = RecipeRepository.buildLocalDatabaseRecipes(
-                selectedCuisine, selectedCategory, fridgeItems.toList(), customUserRecipes.toList(), committedLimitCount, refreshSeed
-            )
+            recipes = RecipeRepository.buildLocalDatabaseRecipes(selectedCuisine, selectedCategory, fridgeItems.toList(), customUserRecipes.toList(), committedLimitCount, refreshSeed)
         }
     }
 
     fun addIngredientsFromInput() {
-        val parts = ingredientInput.split(",", ";")
-            .map { it.trim().replaceFirstChar { ch -> ch.uppercase() } }
+        val parts = ingredientInput.split(",", ";").map { it.trim().replaceFirstChar { ch -> ch.uppercase() } }
             .filter { it.isNotEmpty() && !fridgeItems.contains(it) }
-        if (parts.isNotEmpty()) {
-            fridgeItems.addAll(parts)
-            persistAll()
-        }
+        if (parts.isNotEmpty()) { fridgeItems.addAll(parts); persistAll() }
         ingredientInput = ""
     }
 
@@ -1652,13 +1084,8 @@ fun RecipeAppScreen(
             if (!spokenText.isNullOrBlank()) {
                 lastVoiceCommand = spokenText
                 val (newCuisine, newCategory, extractedIngs) = CulinaryUtils.parseVoiceCommand(spokenText, selectedCuisine, selectedCategory)
-                selectedCuisine = newCuisine
-                selectedCategory = newCategory
-                if (extractedIngs.isNotEmpty()) {
-                    fridgeItems.clear()
-                    fridgeItems.addAll(extractedIngs)
-                    persistAll()
-                }
+                selectedCuisine = newCuisine; selectedCategory = newCategory
+                if (extractedIngs.isNotEmpty()) { fridgeItems.clear(); fridgeItems.addAll(extractedIngs); persistAll() }
                 loadRecipes(selectedMode, newCuisine, newCategory, committedLimitCount, spokenText, collapseHeader = true, forceNewBatch = true)
             }
         }
@@ -1671,35 +1098,25 @@ fun RecipeAppScreen(
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
             putExtra(RecognizerIntent.EXTRA_PROMPT, "Скажите, какие продукты есть дома или какое блюдо найти...")
         }
-        try {
-            voiceLauncher.launch(intent)
-        } catch (_: ActivityNotFoundException) {
+        try { voiceLauncher.launch(intent) } catch (_: ActivityNotFoundException) {
             Toast.makeText(context, "Голосовой ввод Google не установлен", Toast.LENGTH_LONG).show()
         }
     }
 
-    val displayedRecipes by remember(
-        recipes, showOnlyFavorites, favoriteRecipes.size, customUserRecipes.size, searchQuery, onlineSearchResults, selectedSort, fridgeStemsSet
-    ) {
+    val displayedRecipes by remember(recipes, showOnlyFavorites, favoriteRecipes.size, customUserRecipes.size, searchQuery, onlineSearchResults, selectedSort, fridgeStemsSet) {
         derivedStateOf {
             val q = searchQuery.trim()
             val searched = if (q.isEmpty()) {
                 if (showOnlyFavorites) favoriteRecipes.toList() else recipes
             } else {
-                val globalPool = (
-                    customUserRecipes + favoriteRecipes + recipes +
-                    RecipeRepository.getAllCuratedRecipes() + RecipeRepository.getCachedOnlineRecipes() + onlineSearchResults
-                ).distinctBy { it.title.lowercase() }
+                val globalPool = (customUserRecipes + favoriteRecipes + recipes + RecipeRepository.getAllCuratedRecipes() + RecipeRepository.getCachedOnlineRecipes() + onlineSearchResults)
+                    .distinctBy { it.title.lowercase() }
                 val qStem = if (q.length >= 5) q.dropLast(1).lowercase() else q.lowercase()
                 globalPool.filter { r -> r.searchIndexText.contains(qStem) }
             }
-
             when (selectedSort) {
                 SortOrder.FRESH_BATCH -> searched
-                SortOrder.FRIDGE_MATCH -> searched.sortedWith(
-                    compareByDescending<Recipe> { it.isCustom }
-                        .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientMatchingStems(it, fridgeStemsSet) } }
-                )
+                SortOrder.FRIDGE_MATCH -> searched.sortedWith(compareByDescending<Recipe> { it.isCustom }.thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientMatchingStems(it, fridgeStemsSet) } })
                 SortOrder.FASTEST -> searched.sortedBy { it.cookingMinutes }
                 SortOrder.LOW_CALORIE -> searched.sortedBy { it.calories }
             }
@@ -1720,13 +1137,10 @@ fun RecipeAppScreen(
             confirmButton = {
                 Button(onClick = {
                     AppUpdateManager.signatureConflictState = false
-                    val uninstallIntent = Intent(Intent.ACTION_DELETE, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(uninstallIntent)
+                    context.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }) { Text("Удалить старую версию") }
             },
-            dismissButton = {
-                TextButton(onClick = { AppUpdateManager.signatureConflictState = false }) { Text("Позже") }
-            }
+            dismissButton = { TextButton(onClick = { AppUpdateManager.signatureConflictState = false }) { Text("Позже") } }
         )
     }
 
@@ -1740,30 +1154,13 @@ fun RecipeAppScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Обновление ($CURRENT_APP_VERSION)", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Обновление с GitHub", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = githubRepoInput,
-                        onValueChange = { githubRepoInput = it },
-                        label = { Text("Ваш репозиторий GitHub") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text("📱 Установлена: $CURRENT_APP_VERSION (от $installedTimeStr)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-                    Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(8.dp)) {
-                            Text("✨ Что нового в $CURRENT_APP_VERSION:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            Text(WHATS_NEW_TEXT, fontSize = 11.sp)
-                        }
-                    }
+                    OutlinedTextField(value = githubRepoInput, onValueChange = { githubRepoInput = it }, label = { Text("Ваш репозиторий GitHub") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Text("📱 Установленная версия: $installedTimeStr", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                     if (isCheckingUpdate) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1781,10 +1178,8 @@ fun RecipeAppScreen(
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    text = if (isNewAvailable) "🚀 Доступна новая версия на GitHub!"
-                                    else "✅ Установлена последняя версия ($CURRENT_APP_VERSION)",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 13.sp,
+                                    text = if (isNewAvailable) "🚀 Доступна новая версия на GitHub!" else "✅ Установлена последняя версия",
+                                    fontWeight = FontWeight.Bold, fontSize = 13.sp,
                                     color = if (isNewAvailable) Color(0xFFA5D6A7) else MaterialTheme.colorScheme.onSurface
                                 )
                                 Text("📦 Релиз: ${info.releaseTitle}", fontSize = 12.sp)
@@ -1807,17 +1202,13 @@ fun RecipeAppScreen(
                 Button(
                     onClick = {
                         val targetInfo = releaseInfo ?: GitHubReleaseInfo(
-                            repoName = githubRepoInput.trim(),
-                            releaseTitle = "latest-apk",
-                            publishedAtMillis = System.currentTimeMillis(),
-                            publishedFormatted = "Сейчас",
+                            repoName = githubRepoInput.trim(), releaseTitle = "latest-apk",
+                            publishedAtMillis = System.currentTimeMillis(), publishedFormatted = "Сейчас",
                             downloadUrl = "https://github.com/${githubRepoInput.trim()}/releases/download/latest-apk/ChefRecipeApp.apk",
-                            sizeMb = "APK",
-                            isNewerThanInstalled = true
+                            sizeMb = "APK", isNewerThanInstalled = true
                         )
                         coroutineScope.launch {
-                            isDownloadingUpdate = true
-                            downloadProgress = 0.05f
+                            isDownloadingUpdate = true; downloadProgress = 0.05f
                             val result = AppUpdateManager.downloadAndInstallApk(context, targetInfo) { prog -> downloadProgress = prog }
                             isDownloadingUpdate = false
                             result.onFailure { err -> Toast.makeText(context, "Ошибка: ${err.localizedMessage}", Toast.LENGTH_LONG).show() }
@@ -1841,7 +1232,7 @@ fun RecipeAppScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
-        // Компактная шапка (42dp) с бейджем v1.1
+        // Компактная шапка (42dp)
         Row(
             modifier = Modifier.fillMaxWidth().height(42.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1850,153 +1241,60 @@ fun RecipeAppScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "🍲 Шеф-Повар",
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable {
-                        currentScreen = AppScreen.RECIPES
-                        showOnlyFavorites = false
-                        searchQuery = ""
-                    }
+                    fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable { currentScreen = AppScreen.RECIPES; showOnlyFavorites = false; searchQuery = "" }
                 )
-                Spacer(modifier = Modifier.width(4.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier.clickable {
-                        showUpdateDialog = true
-                        checkUpdatesNow(showToast = false)
-                    }
-                ) {
-                    Text(
-                        text = CURRENT_APP_VERSION,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                    )
-                }
-
-                IconButton(onClick = onToggleDarkTheme, modifier = Modifier.size(28.dp)) {
+                IconButton(onClick = onToggleDarkTheme, modifier = Modifier.size(30.dp)) {
                     Icon(
                         imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                        contentDescription = "Тема",
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(17.dp)
+                        contentDescription = "Тема", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
                     )
                 }
                 Box {
-                    IconButton(
-                        onClick = {
-                            showUpdateDialog = true
-                            checkUpdatesNow(showToast = false)
-                        },
-                        modifier = Modifier.size(28.dp)
-                    ) {
+                    IconButton(onClick = { showUpdateDialog = true; checkUpdatesNow(showToast = false) }, modifier = Modifier.size(30.dp)) {
                         Icon(
-                            imageVector = Icons.Default.SystemUpdate,
-                            contentDescription = "Обновление с GitHub",
-                            tint = if (releaseInfo?.isNewerThanInstalled == true) Color(0xFF4CAF50)
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(17.dp)
+                            imageVector = Icons.Default.SystemUpdate, contentDescription = "Обновление с GitHub",
+                            tint = if (releaseInfo?.isNewerThanInstalled == true) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                     if (releaseInfo?.isNewerThanInstalled == true) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF4CAF50))
-                                .align(Alignment.TopEnd)
-                        )
+                        Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF4CAF50)).align(Alignment.TopEnd))
                     }
                 }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 if (currentlySpeakingId != null) {
-                    IconButton(onClick = { speechManager.stop() }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Default.VolumeOff, contentDescription = "Стоп", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(19.dp))
+                    IconButton(onClick = { speechManager.stop() }, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.VolumeOff, contentDescription = "Стоп", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
                     }
                 } else {
-                    IconButton(onClick = { speechManager.switchVoiceProfile() }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.RecordVoiceOver, contentDescription = "Голос", modifier = Modifier.size(17.dp))
+                    IconButton(onClick = { speechManager.switchVoiceProfile() }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.RecordVoiceOver, contentDescription = "Голос", modifier = Modifier.size(18.dp))
                     }
                 }
-
-                IconButton(
-                    onClick = {
-                        currentScreen = AppScreen.RECIPES
-                        isSearchVisible = !isSearchVisible
-                        if (!isSearchVisible) searchQuery = ""
-                    },
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Поиск",
-                        tint = if (isSearchVisible || searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(18.dp)
-                    )
+                IconButton(onClick = { currentScreen = AppScreen.RECIPES; isSearchVisible = !isSearchVisible; if (!isSearchVisible) searchQuery = "" }, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Search, contentDescription = "Поиск", tint = if (isSearchVisible || searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(19.dp))
                 }
-
-                IconButton(
-                    onClick = {
-                        currentScreen = AppScreen.RECIPES
-                        showOnlyFavorites = false
-                        isFiltersExpanded = !isFiltersExpanded
-                    },
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Tune,
-                        contentDescription = "Фильтры",
-                        tint = if (isFiltersExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(18.dp)
-                    )
+                IconButton(onClick = { currentScreen = AppScreen.RECIPES; showOnlyFavorites = false; isFiltersExpanded = !isFiltersExpanded }, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Tune, contentDescription = "Фильтры", tint = if (isFiltersExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(19.dp))
                 }
-
-                IconButton(
-                    onClick = { currentScreen = if (currentScreen == AppScreen.ADD_RECIPE) AppScreen.RECIPES else AppScreen.ADD_RECIPE },
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.AddCircleOutline,
-                        contentDescription = "Свой рецепт",
-                        tint = if (currentScreen == AppScreen.ADD_RECIPE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(18.dp)
-                    )
+                IconButton(onClick = { currentScreen = if (currentScreen == AppScreen.ADD_RECIPE) AppScreen.RECIPES else AppScreen.ADD_RECIPE }, modifier = Modifier.size(30.dp)) {
+                    Icon(Icons.Default.AddCircleOutline, contentDescription = "Свой рецепт", tint = if (currentScreen == AppScreen.ADD_RECIPE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(19.dp))
                 }
-
-                TextButton(
-                    onClick = { currentScreen = if (currentScreen == AppScreen.SHOPPING_LIST) AppScreen.RECIPES else AppScreen.SHOPPING_LIST },
-                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
-                    modifier = Modifier.height(28.dp)
-                ) {
-                    Text("🛒${shoppingListItems.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                TextButton(onClick = { currentScreen = if (currentScreen == AppScreen.SHOPPING_LIST) AppScreen.RECIPES else AppScreen.SHOPPING_LIST }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp), modifier = Modifier.height(30.dp)) {
+                    Text("🛒${shoppingListItems.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
-
-                TextButton(
-                    onClick = {
-                        currentScreen = AppScreen.RECIPES
-                        showOnlyFavorites = !showOnlyFavorites
-                    },
-                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
-                    modifier = Modifier.height(28.dp)
-                ) {
-                    Text(
-                        text = "❤️${favoriteRecipes.size}",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (showOnlyFavorites) Color(0xFFE53935) else MaterialTheme.colorScheme.primary
-                    )
+                TextButton(onClick = { currentScreen = AppScreen.RECIPES; showOnlyFavorites = !showOnlyFavorites }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp), modifier = Modifier.height(30.dp)) {
+                    Text("❤️${favoriteRecipes.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (showOnlyFavorites) Color(0xFFE53935) else MaterialTheme.colorScheme.primary)
                 }
             }
         }
 
         AnimatedVisibility(visible = isSearchVisible && currentScreen == AppScreen.RECIPES) {
             OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
+                value = searchQuery, onValueChange = { searchQuery = it },
                 placeholder = { Text("Глобальный поиск (борщ, кимчи, рамен, курица)...", fontSize = 13.sp) },
                 leadingIcon = {
                     if (isSearchingOnline) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
@@ -2007,40 +1305,28 @@ fun RecipeAppScreen(
                         Icon(Icons.Default.Close, contentDescription = "Закрыть", modifier = Modifier.size(16.dp))
                     }
                 },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                singleLine = true, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
             )
         }
 
         when (currentScreen) {
             AppScreen.SHOPPING_LIST -> {
                 Spacer(modifier = Modifier.height(4.dp))
-                ShoppingListView(
-                    shoppingItems = shoppingListItems,
-                    checkedItems = checkedShoppingItems,
-                    onUpdatePrefs = { persistAll() },
-                    onBackToRecipes = { currentScreen = AppScreen.RECIPES }
-                )
+                ShoppingListView(shoppingItems = shoppingListItems, checkedItems = checkedShoppingItems, onUpdatePrefs = { persistAll() }, onBackToRecipes = { currentScreen = AppScreen.RECIPES })
             }
-
             AppScreen.ADD_RECIPE -> {
                 Spacer(modifier = Modifier.height(4.dp))
                 AddCustomRecipeView(
                     cuisines = CulinaryUtils.CUISINES.filter { it != "Все" } + "Домашняя",
                     categories = CulinaryUtils.CATEGORIES.filter { it != "Все" },
                     onSaveRecipe = { newRecipe ->
-                        customUserRecipes.add(0, newRecipe)
-                        favoriteRecipes.add(0, newRecipe)
-                        persistAll()
-                        selectedMode = DataSourceMode.LOCAL
-                        currentScreen = AppScreen.RECIPES
-                        loadRecipes(DataSourceMode.LOCAL)
+                        customUserRecipes.add(0, newRecipe); favoriteRecipes.add(0, newRecipe); persistAll()
+                        selectedMode = DataSourceMode.LOCAL; currentScreen = AppScreen.RECIPES; loadRecipes(DataSourceMode.LOCAL)
                         Toast.makeText(context, "✅ Рецепт «${newRecipe.title}» сохранен!", Toast.LENGTH_SHORT).show()
                     },
                     onCancel = { currentScreen = AppScreen.RECIPES }
                 )
             }
-
             AppScreen.RECIPES -> {
                 AnimatedVisibility(visible = isFiltersExpanded && !showOnlyFavorites) {
                     Surface(
@@ -2050,98 +1336,48 @@ fun RecipeAppScreen(
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 280.dp)
-                                    .verticalScroll(rememberScrollState()),
+                                modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp).verticalScroll(rememberScrollState()),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.weight(1f)) {
                                         items(DataSourceMode.entries) { mode ->
-                                            FilterChip(
-                                                selected = selectedMode == mode,
-                                                onClick = {
-                                                    selectedMode = mode
-                                                    loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true)
-                                                },
-                                                label = { Text(mode.fullLabel, fontSize = 11.sp) }
-                                            )
+                                            FilterChip(selected = selectedMode == mode, onClick = { selectedMode = mode; loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true) }, label = { Text(mode.fullLabel, fontSize = 11.sp) })
                                         }
                                     }
-                                    IconButton(onClick = { isFiltersExpanded = false }, modifier = Modifier.size(26.dp)) {
-                                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Свернуть")
-                                    }
+                                    IconButton(onClick = { isFiltersExpanded = false }, modifier = Modifier.size(26.dp)) { Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Свернуть") }
                                 }
 
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                                     Text("🧊 Холодильник:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                                     if (fridgeItems.isNotEmpty() || lastVoiceCommand != null) {
                                         Text(
-                                            text = "Очистить (${fridgeItems.size})",
-                                            fontSize = 11.sp,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.clickable {
-                                                fridgeItems.clear()
-                                                lastVoiceCommand = null
-                                                persistAll()
-                                                loadRecipes(forceNewBatch = true)
-                                            }
+                                            text = "Очистить (${fridgeItems.size})", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.clickable { fridgeItems.clear(); lastVoiceCommand = null; persistAll(); loadRecipes(forceNewBatch = true) }
                                         )
                                     }
                                 }
 
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     OutlinedTextField(
-                                        value = ingredientInput,
-                                        onValueChange = { ingredientInput = it },
+                                        value = ingredientInput, onValueChange = { ingredientInput = it },
                                         placeholder = { Text("Впиши продукт или нажми 🎤", fontSize = 12.sp) },
-                                        singleLine = true,
-                                        modifier = Modifier.weight(1f),
+                                        singleLine = true, modifier = Modifier.weight(1f),
                                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                                         keyboardActions = KeyboardActions(onDone = { addIngredientsFromInput() })
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    FilledIconButton(
-                                        onClick = { addIngredientsFromInput() },
-                                        enabled = ingredientInput.isNotBlank(),
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(Icons.Default.Add, contentDescription = "Добавить", modifier = Modifier.size(18.dp))
-                                    }
+                                    FilledIconButton(onClick = { addIngredientsFromInput() }, enabled = ingredientInput.isNotBlank(), modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Add, contentDescription = "Добавить", modifier = Modifier.size(18.dp)) }
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    FilledIconButton(
-                                        onClick = { startVoiceRecognition() },
-                                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.tertiary),
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(Icons.Default.Mic, contentDescription = "Голосом", modifier = Modifier.size(18.dp))
-                                    }
+                                    FilledIconButton(onClick = { startVoiceRecognition() }, colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.tertiary), modifier = Modifier.size(36.dp)) { Icon(Icons.Default.Mic, contentDescription = "Голосом", modifier = Modifier.size(18.dp)) }
                                 }
 
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                     items(fridgeItems) { item ->
-                                        InputChip(
-                                            selected = true,
-                                            onClick = { fridgeItems.remove(item); persistAll() },
-                                            label = { Text("✓ $item", fontSize = 11.sp) },
-                                            trailingIcon = { Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(13.dp)) }
-                                        )
+                                        InputChip(selected = true, onClick = { fridgeItems.remove(item); persistAll() }, label = { Text("✓ $item", fontSize = 11.sp) }, trailingIcon = { Icon(Icons.Default.Clear, contentDescription = null, modifier = Modifier.size(13.dp)) })
                                     }
                                     items(CulinaryUtils.QUICK_FRIDGE.filter { !fridgeItems.contains(it) }) { suggestion ->
-                                        FilterChip(
-                                            selected = false,
-                                            onClick = { fridgeItems.add(suggestion); persistAll() },
-                                            label = { Text("+ $suggestion", fontSize = 11.sp) }
-                                        )
+                                        FilterChip(selected = false, onClick = { fridgeItems.add(suggestion); persistAll() }, label = { Text("+ $suggestion", fontSize = 11.sp) })
                                     }
                                 }
 
@@ -2150,16 +1386,8 @@ fun RecipeAppScreen(
                                     items(CulinaryUtils.CUISINES) { cuisine ->
                                         FilterChip(
                                             selected = selectedCuisine == cuisine,
-                                            onClick = {
-                                                selectedCuisine = cuisine
-                                                loadRecipes(selectedMode, cuisine, selectedCategory, forceNewBatch = true)
-                                            },
-                                            label = {
-                                                Text(
-                                                    if (cuisine == "Все") "🌍 Все" else CulinaryUtils.formatCuisineWithFlag(cuisine),
-                                                    fontSize = 11.sp
-                                                )
-                                            }
+                                            onClick = { selectedCuisine = cuisine; loadRecipes(selectedMode, cuisine, selectedCategory, forceNewBatch = true) },
+                                            label = { Text(if (cuisine == "Все") "🌍 Все" else CulinaryUtils.formatCuisineWithFlag(cuisine), fontSize = 11.sp) }
                                         )
                                     }
                                 }
@@ -2169,10 +1397,7 @@ fun RecipeAppScreen(
                                     items(CulinaryUtils.CATEGORIES) { category ->
                                         FilterChip(
                                             selected = selectedCategory == category,
-                                            onClick = {
-                                                selectedCategory = category
-                                                loadRecipes(selectedMode, selectedCuisine, category, forceNewBatch = true)
-                                            },
+                                            onClick = { selectedCategory = category; loadRecipes(selectedMode, selectedCuisine, category, forceNewBatch = true) },
                                             label = { Text(category, fontSize = 11.sp) }
                                         )
                                     }
@@ -2181,33 +1406,18 @@ fun RecipeAppScreen(
 
                             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
+                            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = "Количество блюд: ${sliderPosition.roundToInt()}",
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
+                                    Text("Количество блюд: ${sliderPosition.roundToInt()}", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
                                     Slider(
-                                        value = sliderPosition,
-                                        onValueChange = { sliderPosition = it },
+                                        value = sliderPosition, onValueChange = { sliderPosition = it },
                                         onValueChangeFinished = { committedLimitCount = sliderPosition.roundToInt() },
-                                        valueRange = 5f..20f,
-                                        steps = 14,
-                                        modifier = Modifier.height(28.dp)
+                                        valueRange = 5f..20f, steps = 14, modifier = Modifier.height(28.dp)
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(10.dp))
                                 Button(
-                                    onClick = {
-                                        committedLimitCount = sliderPosition.roundToInt()
-                                        loadRecipes(targetCount = committedLimitCount, collapseHeader = true, forceNewBatch = true)
-                                    },
+                                    onClick = { committedLimitCount = sliderPosition.roundToInt(); loadRecipes(targetCount = committedLimitCount, collapseHeader = true, forceNewBatch = true) },
                                     enabled = !isLoading
                                 ) {
                                     Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -2236,14 +1446,9 @@ fun RecipeAppScreen(
                 } else if (displayedRecipes.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                if (showOnlyFavorites) "Вы еще не добавили ни одного рецепта в Избранное ❤️"
-                                else "По запросу «$searchQuery» ничего не найдено"
-                            )
+                            Text(if (showOnlyFavorites) "Вы еще не добавили ни одного рецепта в Избранное ❤️" else "По запросу «$searchQuery» ничего не найдено")
                             Spacer(modifier = Modifier.height(8.dp))
-                            Button(onClick = { showOnlyFavorites = false; searchQuery = ""; isSearchVisible = false }) {
-                                Text("Показать все рецепты")
-                            }
+                            Button(onClick = { showOnlyFavorites = false; searchQuery = ""; isSearchVisible = false }) { Text("Показать все рецепты") }
                         }
                     }
                 } else {
@@ -2266,43 +1471,20 @@ fun RecipeAppScreen(
                                                 showOnlyFavorites -> "❤️ Избранное (${displayedRecipes.size})"
                                                 else -> "${selectedMode.shortLabel} • $selectedCuisine • $selectedCategory (${displayedRecipes.size}) ▾"
                                             },
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 12.sp, fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                                         )
                                         if (!showOnlyFavorites && searchQuery.isBlank()) {
-                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                                Surface(
-                                                    color = MaterialTheme.colorScheme.tertiary,
-                                                    shape = RoundedCornerShape(8.dp),
-                                                    modifier = Modifier.clickable { pickRandomLuckyDish() }
-                                                ) {
-                                                    Text(
-                                                        text = "🎲 Случайное",
-                                                        fontSize = 11.sp,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.onTertiary,
-                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                                    )
-                                                }
-                                                Surface(
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                    shape = RoundedCornerShape(8.dp),
-                                                    modifier = Modifier.clickable {
-                                                        loadRecipes(targetCount = committedLimitCount, collapseHeader = true, forceNewBatch = true)
-                                                    }
-                                                ) {
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                                    ) {
-                                                        Icon(Icons.Default.Refresh, contentDescription = "Новые", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
-                                                        Spacer(modifier = Modifier.width(3.dp))
-                                                        Text("Новые", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
-                                                    }
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.primary,
+                                                shape = RoundedCornerShape(8.dp),
+                                                modifier = Modifier.clickable { loadRecipes(targetCount = committedLimitCount, collapseHeader = true, forceNewBatch = true) }
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                                    Icon(Icons.Default.Refresh, contentDescription = "Новые", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
+                                                    Spacer(modifier = Modifier.width(3.dp))
+                                                    Text("Новые", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
                                                 }
                                             }
                                         }
@@ -2310,30 +1492,16 @@ fun RecipeAppScreen(
                                 }
 
                                 if (!isFiltersExpanded) {
-                                    LazyRow(
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                                         items(DataSourceMode.entries) { mode ->
                                             FilterChip(
                                                 selected = selectedMode == mode && !showOnlyFavorites,
-                                                onClick = {
-                                                    showOnlyFavorites = false
-                                                    selectedMode = mode
-                                                    loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true)
-                                                },
-                                                label = { Text(mode.shortLabel, fontSize = 11.sp) },
-                                                modifier = Modifier.height(28.dp)
+                                                onClick = { showOnlyFavorites = false; selectedMode = mode; loadRecipes(mode, selectedCuisine, selectedCategory, forceNewBatch = true) },
+                                                label = { Text(mode.shortLabel, fontSize = 11.sp) }, modifier = Modifier.height(28.dp)
                                             )
                                         }
                                         items(SortOrder.entries) { sortOption ->
-                                            FilterChip(
-                                                selected = selectedSort == sortOption,
-                                                onClick = { selectedSort = sortOption },
-                                                label = { Text(sortOption.label, fontSize = 11.sp) },
-                                                modifier = Modifier.height(28.dp)
-                                            )
+                                            FilterChip(selected = selectedSort == sortOption, onClick = { selectedSort = sortOption }, label = { Text(sortOption.label, fontSize = 11.sp) }, modifier = Modifier.height(28.dp))
                                         }
                                     }
                                 }
@@ -2343,45 +1511,26 @@ fun RecipeAppScreen(
                         itemsIndexed(items = displayedRecipes, key = { _, item -> item.id }) { index, recipe ->
                             val isFav = favoriteIdsSet.contains(recipe.id)
                             RecipeCard(
-                                index = index + 1,
-                                recipe = recipe,
-                                isDarkTheme = isDarkTheme,
-                                fridgeStems = fridgeStemsSet,
-                                shoppingSet = shoppingItemsSet,
-                                isFavorite = isFav,
+                                index = index + 1, recipe = recipe, isDarkTheme = isDarkTheme,
+                                fridgeStems = fridgeStemsSet, shoppingSet = shoppingItemsSet, isFavorite = isFav,
                                 currentlySpeakingId = currentlySpeakingId,
                                 onSpeakText = { utteranceId, text -> speechManager.speak(utteranceId, text) },
-                                onTimerRunningChanged = { isRunningNow ->
-                                    runningTimersCount = (runningTimersCount + if (isRunningNow) 1 else -1).coerceAtLeast(0)
-                                },
                                 onAddMissingToCart = { missingItems ->
                                     var addedCount = 0
-                                    missingItems.forEach { item ->
-                                        if (!shoppingListItems.contains(item)) {
-                                            shoppingListItems.add(item)
-                                            addedCount++
-                                        }
-                                    }
+                                    missingItems.forEach { item -> if (!shoppingListItems.contains(item)) { shoppingListItems.add(item); addedCount++ } }
                                     persistAll()
-                                    Toast.makeText(
-                                        context,
-                                        if (addedCount > 0) "Добавлено в список покупок: $addedCount шт. 🛒"
-                                        else "Все эти продукты уже есть в списке покупок!",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    Toast.makeText(context, if (addedCount > 0) "Добавлено в список покупок: $addedCount шт. 🛒" else "Все эти продукты уже в списке покупок!", Toast.LENGTH_SHORT).show()
                                 },
                                 onToggleFavorite = {
                                     val existingIdx = favoriteRecipes.indexOfFirst { it.id == recipe.id || it.title == recipe.title }
-                                    if (existingIdx != -1) favoriteRecipes.removeAt(existingIdx)
-                                    else favoriteRecipes.add(0, recipe)
+                                    if (existingIdx != -1) favoriteRecipes.removeAt(existingIdx) else favoriteRecipes.add(0, recipe)
                                     persistAll()
                                 },
                                 onDeleteCustom = if (recipe.isCustom) {
                                     {
                                         customUserRecipes.removeAll { it.id == recipe.id }
                                         favoriteRecipes.removeAll { it.id == recipe.id }
-                                        persistAll()
-                                        loadRecipes()
+                                        persistAll(); loadRecipes()
                                         Toast.makeText(context, "Рецепт удален", Toast.LENGTH_SHORT).show()
                                     }
                                 } else null
@@ -2407,17 +1556,9 @@ fun RecipeAppScreen(
     }
 }
 
-// =========================================================================
-// 9. ЭКРАН ДОБАВЛЕНИЯ СОБСТВЕННОГО РЕЦЕПТА
-// =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AddCustomRecipeView(
-    cuisines: List<String>,
-    categories: List<String>,
-    onSaveRecipe: (Recipe) -> Unit,
-    onCancel: () -> Unit
-) {
+fun AddCustomRecipeView(cuisines: List<String>, categories: List<String>, onSaveRecipe: (Recipe) -> Unit, onCancel: () -> Unit) {
     val context = LocalContext.current
     var title by remember { mutableStateOf("") }
     var description by remember { mutableStateOf("") }
@@ -2432,37 +1573,20 @@ fun AddCustomRecipeView(
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("👨‍🍳 Добавить свой рецепт", fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            TextButton(onClick = onCancel) {
-                Icon(Icons.Default.Close, contentDescription = "Закрыть")
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Отмена")
-            }
+            TextButton(onClick = onCancel) { Icon(Icons.Default.Close, contentDescription = "Закрыть"); Spacer(modifier = Modifier.width(4.dp)); Text("Отмена") }
         }
-
         Spacer(modifier = Modifier.height(6.dp))
-        OutlinedTextField(
-            value = title, onValueChange = { title = it },
-            label = { Text("Название блюда *") }, placeholder = { Text("Например: Домашние пельмени") },
-            singleLine = true, modifier = Modifier.fillMaxWidth()
-        )
+        OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Название блюда *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(6.dp))
-        OutlinedTextField(
-            value = description, onValueChange = { description = it },
-            label = { Text("Краткое описание блюда") }, placeholder = { Text("Сочные домашние пельмени ручной лепки...") },
-            minLines = 2, modifier = Modifier.fillMaxWidth()
-        )
+        OutlinedTextField(value = description, onValueChange = { description = it }, label = { Text("Краткое описание блюда") }, minLines = 2, modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(6.dp))
         Text("Кухня:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(cuisines) { c ->
-                FilterChip(selected = selectedCuisine == c, onClick = { selectedCuisine = c }, label = { Text(CulinaryUtils.formatCuisineWithFlag(c), fontSize = 12.sp) })
-            }
+            items(cuisines) { c -> FilterChip(selected = selectedCuisine == c, onClick = { selectedCuisine = c }, label = { Text(CulinaryUtils.formatCuisineWithFlag(c), fontSize = 12.sp) }) }
         }
         Text("Категория:", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
         LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            items(categories) { cat ->
-                FilterChip(selected = selectedCategory == cat, onClick = { selectedCategory = cat }, label = { Text(cat, fontSize = 12.sp) })
-            }
+            items(categories) { cat -> FilterChip(selected = selectedCategory == cat, onClick = { selectedCategory = cat }, label = { Text(cat, fontSize = 12.sp) }) }
         }
         Spacer(modifier = Modifier.height(6.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -2470,25 +1594,11 @@ fun AddCustomRecipeView(
             OutlinedTextField(value = calories, onValueChange = { calories = it }, label = { Text("Ккал на 100 г") }, singleLine = true, modifier = Modifier.weight(1f))
         }
         Spacer(modifier = Modifier.height(6.dp))
-        OutlinedTextField(
-            value = ingredientsText, onValueChange = { ingredientsText = it },
-            label = { Text("Ингредиенты (с новой строки или через запятую) *") },
-            placeholder = { Text("Курица - 500 г\nКартофель - 4 шт.") },
-            minLines = 3, modifier = Modifier.fillMaxWidth()
-        )
+        OutlinedTextField(value = ingredientsText, onValueChange = { ingredientsText = it }, label = { Text("Ингредиенты (с новой строки) *") }, minLines = 3, modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(6.dp))
-        OutlinedTextField(
-            value = instructionsText, onValueChange = { instructionsText = it },
-            label = { Text("Шаги приготовления (с новой строки) *") },
-            placeholder = { Text("Нарежьте курицу и картофель.\nЗапекайте 25 минут при 180°C.") },
-            minLines = 4, modifier = Modifier.fillMaxWidth()
-        )
+        OutlinedTextField(value = instructionsText, onValueChange = { instructionsText = it }, label = { Text("Шаги приготовления (с новой строки) *") }, minLines = 4, modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(6.dp))
-        OutlinedTextField(
-            value = customImageUrl, onValueChange = { customImageUrl = it },
-            label = { Text("Ссылка на фото (необязательно)") }, placeholder = { Text("https://...") },
-            singleLine = true, modifier = Modifier.fillMaxWidth()
-        )
+        OutlinedTextField(value = customImageUrl, onValueChange = { customImageUrl = it }, label = { Text("Ссылка на фото (необязательно)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(14.dp))
 
         Button(
@@ -2500,24 +1610,15 @@ fun AddCustomRecipeView(
                 val parsedIngs = ingredientsText.split("\n", ",").map { it.trim() }.filter { it.isNotEmpty() }
                 val rawSteps = instructionsText.split("\n").map { it.trim() }.filter { it.isNotEmpty() }
                 val finalSteps = CulinaryUtils.ensureValidInstructions(rawSteps, title.trim(), parsedIngs)
-                val finalDesc = if (description.isNotBlank()) description.trim()
-                else CulinaryUtils.buildDishDescription(title.trim(), selectedCuisine, selectedCategory, parsedIngs)
+                val finalDesc = if (description.isNotBlank()) description.trim() else CulinaryUtils.buildDishDescription(title.trim(), selectedCuisine, selectedCategory, parsedIngs)
                 val imgs = CulinaryUtils.buildDishPhotoUrls(title.trim(), 10, customImageUrl.trim().takeIf { it.isNotEmpty() })
 
                 onSaveRecipe(
                     Recipe(
-                        id = "custom_${System.currentTimeMillis()}",
-                        title = title.trim(),
-                        description = finalDesc,
-                        cuisine = selectedCuisine,
-                        category = selectedCategory,
-                        cookingTime = cookingTime.ifBlank { "30 мин" },
-                        difficulty = "Домашний",
-                        calories = calories.toIntOrNull() ?: 250,
-                        imageUrls = imgs,
-                        ingredients = parsedIngs,
-                        instructions = finalSteps,
-                        isCustom = true
+                        id = "custom_${System.currentTimeMillis()}", title = title.trim(), description = finalDesc,
+                        cuisine = selectedCuisine, category = selectedCategory, cookingTime = cookingTime.ifBlank { "30 мин" },
+                        difficulty = "Домашний", calories = calories.toIntOrNull() ?: 250,
+                        imageUrls = imgs, ingredients = parsedIngs, instructions = finalSteps, isCustom = true
                     )
                 )
             },
@@ -2530,64 +1631,34 @@ fun AddCustomRecipeView(
     }
 }
 
-// =========================================================================
-// 10. ЭКРАН СПИСКА ПОКУПОК
-// =========================================================================
 @Composable
-fun ShoppingListView(
-    shoppingItems: MutableList<String>,
-    checkedItems: MutableList<String>,
-    onUpdatePrefs: () -> Unit,
-    onBackToRecipes: () -> Unit
-) {
+fun ShoppingListView(shoppingItems: MutableList<String>, checkedItems: MutableList<String>, onUpdatePrefs: () -> Unit, onBackToRecipes: () -> Unit) {
     val context = LocalContext.current
     var newItemText by remember { mutableStateOf("") }
 
     fun addCustomItem() {
         val trimmed = newItemText.trim().replaceFirstChar { it.uppercase() }
-        if (trimmed.isNotEmpty() && !shoppingItems.contains(trimmed)) {
-            shoppingItems.add(trimmed)
-            onUpdatePrefs()
-            newItemText = ""
-        }
+        if (trimmed.isNotEmpty() && !shoppingItems.contains(trimmed)) { shoppingItems.add(trimmed); onUpdatePrefs(); newItemText = "" }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBackToRecipes) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Назад")
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("К рецептам")
-            }
+            TextButton(onClick = onBackToRecipes) { Icon(Icons.Default.ArrowBack, contentDescription = "Назад"); Spacer(modifier = Modifier.width(4.dp)); Text("К рецептам") }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (shoppingItems.isNotEmpty()) {
                     FilledTonalButton(onClick = {
                         val shareText = buildString {
                             append("🛒 Мой список покупок (Шеф-Повар):\n\n")
-                            shoppingItems.forEachIndexed { index, item ->
-                                val mark = if (checkedItems.contains(item)) "✅" else "▫️"
-                                append("${index + 1}. $mark $item\n")
-                            }
+                            shoppingItems.forEachIndexed { index, item -> append("${index + 1}. ${if (checkedItems.contains(item)) "✅" else "▫️"} $item\n") }
                         }
-                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                            putExtra(Intent.EXTRA_TEXT, shareText)
-                            type = "text/plain"
-                        }
-                        context.startActivity(Intent.createChooser(sendIntent, "Отправить список покупок"))
-                    }) {
-                        Icon(Icons.Default.Share, contentDescription = "Поделиться", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Поделиться", fontSize = 12.sp)
-                    }
+                        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { putExtra(Intent.EXTRA_TEXT, shareText); type = "text/plain" }, "Отправить список покупок"))
+                    }) { Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Поделиться", fontSize = 12.sp) }
                     OutlinedButton(onClick = { shoppingItems.clear(); checkedItems.clear(); onUpdatePrefs() }) {
-                        Icon(Icons.Default.Delete, contentDescription = "Очистить", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Очистить", fontSize = 12.sp)
+                        Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp)); Spacer(modifier = Modifier.width(4.dp)); Text("Очистить", fontSize = 12.sp)
                     }
                 }
             }
         }
-
         Spacer(modifier = Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
@@ -2598,9 +1669,7 @@ fun ShoppingListView(
                 keyboardActions = KeyboardActions(onDone = { addCustomItem() })
             )
             Spacer(modifier = Modifier.width(8.dp))
-            FilledIconButton(onClick = { addCustomItem() }, enabled = newItemText.isNotBlank()) {
-                Icon(Icons.Default.Add, contentDescription = "Добавить")
-            }
+            FilledIconButton(onClick = { addCustomItem() }, enabled = newItemText.isNotBlank()) { Icon(Icons.Default.Add, contentDescription = "Добавить") }
         }
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -2620,27 +1689,17 @@ fun ShoppingListView(
                     val isChecked = checkedItems.contains(item)
                     Card(
                         shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isChecked) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-                            else MaterialTheme.colorScheme.surfaceVariant
-                        ),
+                        colors = CardDefaults.cardColors(containerColor = if (isChecked) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f) else MaterialTheme.colorScheme.surfaceVariant),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { if (isChecked) checkedItems.remove(item) else checkedItems.add(item) }
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                            modifier = Modifier.fillMaxWidth().clickable { if (isChecked) checkedItems.remove(item) else checkedItems.add(item) }.padding(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                 Checkbox(checked = isChecked, onCheckedChange = { if (it) checkedItems.add(item) else checkedItems.remove(item) })
-                                Text(
-                                    text = item, fontSize = 15.sp,
-                                    textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None,
-                                    color = if (isChecked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface
-                                )
+                                Text(item, fontSize = 15.sp, textDecoration = if (isChecked) TextDecoration.LineThrough else TextDecoration.None, color = if (isChecked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
                             }
                             IconButton(onClick = { shoppingItems.remove(item); checkedItems.remove(item); onUpdatePrefs() }) {
                                 Icon(Icons.Default.Clear, contentDescription = "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2653,9 +1712,6 @@ fun ShoppingListView(
     }
 }
 
-// =========================================================================
-// 11. КАРТОЧКА РЕЦЕПТА
-// =========================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun RecipeCard(
@@ -2667,26 +1723,17 @@ fun RecipeCard(
     isFavorite: Boolean,
     currentlySpeakingId: String?,
     onSpeakText: (String, String) -> Unit,
-    onTimerRunningChanged: (Boolean) -> Unit,
     onAddMissingToCart: (List<String>) -> Unit,
     onToggleFavorite: () -> Unit,
     onDeleteCustom: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var portions by remember(recipe.id) { mutableIntStateOf(2) }
-    val scaledIngredients = remember(recipe.ingredients, portions) {
-        recipe.ingredients.map { CulinaryUtils.scaleIngredientAmount(it, portions) }
-    }
-    val safeInstructions = remember(recipe.instructions, recipe.title) {
-        CulinaryUtils.ensureValidInstructions(recipe.instructions, recipe.title, recipe.ingredients)
-    }
+    val scaledIngredients = remember(recipe.ingredients, portions) { recipe.ingredients.map { CulinaryUtils.scaleIngredientAmount(it, portions) } }
+    val safeInstructions = remember(recipe.instructions, recipe.title) { CulinaryUtils.ensureValidInstructions(recipe.instructions, recipe.title, recipe.ingredients) }
 
     val checkedIngredients = remember(recipe.id, fridgeStems, portions) {
-        mutableStateListOf<String>().apply {
-            scaledIngredients.forEach { ing ->
-                if (CulinaryUtils.isIngredientMatchingStems(ing, fridgeStems)) add(ing)
-            }
-        }
+        mutableStateListOf<String>().apply { scaledIngredients.forEach { ing -> if (CulinaryUtils.isIngredientMatchingStems(ing, fridgeStems)) add(ing) } }
     }
     val completedSteps = remember(recipe.id) { mutableStateListOf<Int>() }
 
@@ -2717,50 +1764,29 @@ fun RecipeCard(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    if (recipe.isCustom) {
-                        Text("👨‍🍳 Мой домашний рецепт", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                    }
+                    if (recipe.isCustom) Text("👨‍🍳 Мой домашний рецепт", fontSize = 11.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                     Text("#$index. ${recipe.title}", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = {
                             val shareText = buildString {
-                                append("🍲 ${recipe.title} (${recipe.cuisine})\n")
-                                append("📖 ${recipe.description}\n")
-                                append("⏱ ${recipe.cookingTime} • 🔥 ${recipe.calories} ккал\n\n")
-                                append("🛒 Ингредиенты (на $portions порц.):\n")
+                                append("🍲 ${recipe.title} (${recipe.cuisine})\n📖 ${recipe.description}\n⏱ ${recipe.cookingTime} • 🔥 ${recipe.calories} ккал\n\n🛒 Ингредиенты (на $portions порц.):\n")
                                 scaledIngredients.forEach { append("• $it\n") }
                                 append("\n👨‍🍳 Приготовление:\n")
                                 safeInstructions.forEachIndexed { idx, s -> append("${idx + 1}. $s\n") }
                             }
-                            val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                putExtra(Intent.EXTRA_TEXT, shareText)
-                                type = "text/plain"
-                            }
-                            context.startActivity(Intent.createChooser(sendIntent, "Поделиться рецептом"))
+                            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply { putExtra(Intent.EXTRA_TEXT, shareText); type = "text/plain" }, "Поделиться рецептом"))
                         },
                         modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(Icons.Default.Share, contentDescription = "Поделиться", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                    }
+                    ) { Icon(Icons.Default.Share, contentDescription = "Поделиться", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) }
                     if (onDeleteCustom != null) {
-                        IconButton(onClick = onDeleteCustom, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(19.dp))
-                        }
+                        IconButton(onClick = onDeleteCustom, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.Delete, contentDescription = "Удалить", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(19.dp)) }
                     }
                     IconButton(onClick = onToggleFavorite, modifier = Modifier.size(34.dp)) {
-                        Icon(
-                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Избранное",
-                            tint = if (isFavorite) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Icon(imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, contentDescription = "Избранное", tint = if (isFavorite) Color(0xFFE53935) else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -2770,22 +1796,12 @@ fun RecipeCard(
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 item {
                     Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(8.dp)) {
-                        Text(
-                            text = CulinaryUtils.formatCuisineWithFlag(recipe.cuisine),
-                            fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
+                        Text(CulinaryUtils.formatCuisineWithFlag(recipe.cuisine), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
                     }
                 }
                 item {
                     Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(8.dp)) {
-                        Text(
-                            text = "🍽 ${recipe.category}",
-                            fontSize = 11.sp, fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
+                        Text("🍽 ${recipe.category}", fontSize = 11.sp, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSecondaryContainer, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
                     }
                 }
                 item {
@@ -2802,17 +1818,8 @@ fun RecipeCard(
 
             if (recipe.description.isNotBlank()) {
                 Spacer(modifier = Modifier.height(6.dp))
-                Surface(
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "📖 ${recipe.description}",
-                        fontSize = 13.sp, fontStyle = FontStyle.Italic,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                    )
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    Text("📖 ${recipe.description}", fontSize = 13.sp, fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
                 }
             }
 
@@ -2821,11 +1828,8 @@ fun RecipeCard(
             FilledTonalButton(
                 onClick = {
                     val fullSpeech = buildString {
-                        append("Рецепт: ${recipe.title}. ${recipe.description} ")
-                        append("Кухня: ${recipe.cuisine}. Время готовки: ${recipe.cookingTime}. ")
-                        append("Ингредиенты на $portions порции: ")
-                        append(scaledIngredients.joinToString(". "))
-                        append(". Способ приготовления: ")
+                        append("Рецепт: ${recipe.title}. ${recipe.description} Кухня: ${recipe.cuisine}. Время готовки: ${recipe.cookingTime}. ")
+                        append("Ингредиенты на $portions порции: ${scaledIngredients.joinToString(". ")}. Способ приготовления: ")
                         safeInstructions.forEachIndexed { i, step -> append("Шаг ${i + 1}. $step. ") }
                         append("Приятного аппетита!")
                     }
@@ -2852,38 +1856,22 @@ fun RecipeCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            val safeImages = recipe.imageUrls.ifEmpty {
-                listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg")
-            }
+            val safeImages = recipe.imageUrls.ifEmpty { listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg") }
             val pagerState = rememberPagerState(pageCount = { safeImages.size })
 
             Box(modifier = Modifier.fillMaxWidth().height(200.dp)) {
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                     val imgUrl = safeImages[page]
                     val imgReq = remember(imgUrl) {
-                        ImageRequest.Builder(context)
-                            .data(imgUrl)
-                            .size(600, 400)
-                            .crossfade(true)
-                            .memoryCachePolicy(CachePolicy.ENABLED)
-                            .diskCachePolicy(CachePolicy.ENABLED)
-                            .build()
+                        ImageRequest.Builder(context).data(imgUrl).size(600, 400).crossfade(true)
+                            .memoryCachePolicy(CachePolicy.ENABLED).diskCachePolicy(CachePolicy.ENABLED).build()
                     }
                     AsyncImage(
-                        model = imgReq,
-                        contentDescription = recipe.title,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                        model = imgReq, contentDescription = recipe.title, contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surfaceVariant)
                     )
                 }
-                Surface(
-                    color = Color.Black.copy(alpha = 0.65f),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
-                ) {
+                Surface(color = Color.Black.copy(alpha = 0.65f), shape = RoundedCornerShape(12.dp), modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)) {
                     Text("📷 ${pagerState.currentPage + 1}/${safeImages.size}", color = Color.White, fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
                 }
                 if (safeImages.size > 1) {
@@ -2918,10 +1906,7 @@ fun RecipeCard(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { if (isChecked) checkedIngredients.remove(ingredient) else checkedIngredients.add(ingredient) }
-                        .padding(vertical = 2.dp)
+                    modifier = Modifier.fillMaxWidth().clickable { if (isChecked) checkedIngredients.remove(ingredient) else checkedIngredients.add(ingredient) }.padding(vertical = 2.dp)
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                         Checkbox(checked = isChecked, onCheckedChange = { if (it) checkedIngredients.add(ingredient) else checkedIngredients.remove(ingredient) })
@@ -2967,9 +1952,7 @@ fun RecipeCard(
                             else -> Color.Transparent
                         },
                         shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { if (isStepDone) completedSteps.remove(stepIndex) else completedSteps.add(stepIndex) }
+                        modifier = Modifier.fillMaxWidth().clickable { if (isStepDone) completedSteps.remove(stepIndex) else completedSteps.add(stepIndex) }
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
                             Text(
@@ -2992,12 +1975,7 @@ fun RecipeCard(
                     }
 
                     if (timerInfo != null) {
-                        StepTimerWidget(
-                            timerKey = stepUtteranceId,
-                            timerInfo = timerInfo,
-                            isDarkTheme = isDarkTheme,
-                            onRunningStateChanged = onTimerRunningChanged
-                        )
+                        StepTimerWidget(timerKey = stepUtteranceId, timerInfo = timerInfo, isDarkTheme = isDarkTheme)
                     }
                 }
             }
@@ -3006,37 +1984,20 @@ fun RecipeCard(
 }
 
 @Composable
-fun StepTimerWidget(
-    timerKey: String,
-    timerInfo: ParsedTimer,
-    isDarkTheme: Boolean,
-    onRunningStateChanged: (Boolean) -> Unit
-) {
+fun StepTimerWidget(timerKey: String, timerInfo: ParsedTimer, isDarkTheme: Boolean) {
     var timeLeft by remember(timerKey) { mutableIntStateOf(timerInfo.durationSeconds) }
     var isRunning by remember(timerKey) { mutableStateOf(false) }
     var isFinished by remember(timerKey) { mutableStateOf(false) }
-
-    DisposableEffect(isRunning) {
-        if (isRunning) onRunningStateChanged(true)
-        onDispose { if (isRunning) onRunningStateChanged(false) }
-    }
 
     LaunchedEffect(isRunning) {
         while (isRunning && timeLeft > 0) {
             delay(1000L)
             timeLeft -= 1
-            if (timeLeft == 0) {
-                isRunning = false
-                isFinished = true
-                CulinaryUtils.playAlarmSound()
-            }
+            if (timeLeft == 0) { isRunning = false; isFinished = true; CulinaryUtils.playAlarmSound() }
         }
     }
 
-    val minutes = timeLeft / 60
-    val seconds = timeLeft % 60
-    val timeFormatted = String.format(Locale.getDefault(), "%02d:%02d", minutes, seconds)
-
+    val timeFormatted = String.format(Locale.getDefault(), "%02d:%02d", timeLeft / 60, timeLeft % 60)
     val containerBg = when {
         isFinished && isDarkTheme -> Color(0xFF1B3B22)
         isFinished && !isDarkTheme -> Color(0xFFE8F5E9)
@@ -3046,23 +2007,10 @@ fun StepTimerWidget(
     }
     val accentDoneColor = if (isDarkTheme) Color(0xFFA5D6A7) else Color(0xFF2E7D32)
 
-    Surface(
-        color = containerBg,
-        shape = RoundedCornerShape(8.dp),
-        modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 4.dp).fillMaxWidth()
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
+    Surface(color = containerBg, shape = RoundedCornerShape(8.dp), modifier = Modifier.padding(start = 20.dp, top = 4.dp, bottom = 4.dp).fillMaxWidth()) {
+        Row(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Default.Timer,
-                    contentDescription = "Таймер",
-                    tint = if (isFinished) accentDoneColor else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp)
-                )
+                Icon(Icons.Default.Timer, contentDescription = "Таймер", tint = if (isFinished) accentDoneColor else MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
                     text = when {
@@ -3070,29 +2018,19 @@ fun StepTimerWidget(
                         isRunning -> "⏳ Осталось: $timeFormatted"
                         else -> "⏱ Таймер на ${timerInfo.label}"
                     },
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
                     color = if (isFinished) accentDoneColor else MaterialTheme.colorScheme.onSurface
                 )
             }
-
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (!isFinished) {
-                    FilledTonalButton(
-                        onClick = { isRunning = !isRunning },
-                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp),
-                        modifier = Modifier.height(30.dp)
-                    ) {
-                        Icon(imageVector = if (isRunning) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Старт", modifier = Modifier.size(16.dp))
+                    FilledTonalButton(onClick = { isRunning = !isRunning }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp), modifier = Modifier.height(30.dp)) {
+                        Icon(if (isRunning) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Старт", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(if (isRunning) "Пауза" else "Старт", fontSize = 11.sp)
                     }
                 }
-                OutlinedButton(
-                    onClick = { isRunning = false; isFinished = false; timeLeft = timerInfo.durationSeconds },
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                    modifier = Modifier.height(30.dp)
-                ) {
+                OutlinedButton(onClick = { isRunning = false; isFinished = false; timeLeft = timerInfo.durationSeconds }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp), modifier = Modifier.height(30.dp)) {
                     Text("Сброс", fontSize = 11.sp)
                 }
             }
@@ -3101,89 +2039,65 @@ fun StepTimerWidget(
 }
 
 // =========================================================================
-// 12. ВЫСОКОСКОРОСТНОЙ РЕПОЗИТОРИЙ
+// РЕПОЗИТОРИЙ ДАННЫХ И ЛОКАЛЬНАЯ БАЗА БЛЮД
 // =========================================================================
 object RecipeRepository {
     private val translationSemaphore = Semaphore(4)
     private val translationCache = ConcurrentHashMap<String, String>()
     private val mealDbDetailCache = ConcurrentHashMap<String, Recipe>()
-
     private val recentlyShownMealDbIds = Collections.synchronizedSet(LinkedHashSet<String>())
     private val recentlyShownAiTitles = Collections.synchronizedSet(LinkedHashSet<String>())
     private val searchLetters = listOf('b', 'c', 's', 'p', 'm', 't', 'f', 'g', 'r', 'l', 'k', 'a', 'd', 'h', 'n', 'w')
 
     fun getAllCuratedRecipes(): List<Recipe> = CURATED_LOCAL_RECIPES
     fun getCachedOnlineRecipes(): List<Recipe> = mealDbDetailCache.values.toList()
-
-    fun putCachedTranslation(key: String, value: String) {
-        translationCache[key] = value
-    }
-
-    fun exportTranslationCacheSnapshot(): Map<String, String> =
-        translationCache.entries.take(350).associate { it.key to it.value }
+    fun putCachedTranslation(key: String, value: String) { translationCache[key] = value }
+    fun exportTranslationCacheSnapshot(): Map<String, String> = translationCache.entries.take(350).associate { it.key to it.value }
 
     private fun httpGet(urlStr: String, timeoutMs: Int = 5500): String {
         val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            setRequestProperty("User-Agent", "Mozilla/5.0")
-            connectTimeout = timeoutMs
-            readTimeout = timeoutMs
+            requestMethod = "GET"; setRequestProperty("User-Agent", "Mozilla/5.0")
+            connectTimeout = timeoutMs; readTimeout = timeoutMs
         }
-        return try {
-            conn.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            conn.disconnect()
-        }
+        return try { conn.inputStream.bufferedReader().use { it.readText() } } finally { conn.disconnect() }
     }
 
     fun translateRuToEn(text: String): String {
         val clean = text.trim().lowercase()
         val quickDict = mapOf(
-            "борщ" to "borscht", "суп" to "soup", "курица" to "chicken", "говядина" to "beef",
-            "свинина" to "pork", "рыба" to "fish", "лосось" to "salmon", "креветки" to "prawn",
-            "паста" to "pasta", "пицца" to "pizza", "салат" to "salad", "пирог" to "pie",
-            "торт" to "cake", "печенье" to "cookies", "рамен" to "ramen", "карри" to "curry",
-            "тако" to "tacos", "бургер" to "burger", "стейк" to "steak", "рис" to "rice",
-            "картофель" to "potato", "грибы" to "mushroom", "сыр" to "cheese", "блины" to "pancakes",
-            "шоколад" to "chocolate", "лазанья" to "lasagne", "тирамису" to "tiramisu"
+            "борщ" to "borscht", "суп" to "soup", "курица" to "chicken", "говядина" to "beef", "свинина" to "pork",
+            "рыба" to "fish", "лосось" to "salmon", "креветки" to "prawn", "паста" to "pasta", "пицца" to "pizza",
+            "салат" to "salad", "пирог" to "pie", "торт" to "cake", "печенье" to "cookies", "рамен" to "ramen",
+            "карри" to "curry", "тако" to "tacos", "бургер" to "burger", "стейк" to "steak", "рис" to "rice",
+            "картофель" to "potato", "грибы" to "mushroom", "сыр" to "cheese", "блины" to "pancakes", "шоколад" to "chocolate"
         )
         quickDict[clean]?.let { return it }
         return try {
             val encoded = URLEncoder.encode(clean, "UTF-8")
             val response = httpGet("https://translate.googleapis.com/translate_a/single?client=gtx&sl=ru&tl=en&dt=t&q=$encoded", 4000)
             JSONArray(response).getJSONArray(0).getJSONArray(0).getString(0).trim()
-        } catch (_: Exception) {
-            clean
-        }
+        } catch (_: Exception) { clean }
     }
 
     fun translateEnToRu(text: String): String {
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return trimmed
         translationCache[trimmed]?.let { return it }
-
         val preCleaned = CulinaryUtils.normalizeAndTranslateCulinary(trimmed)
-        if (!CulinaryUtils.hasLatin(preCleaned)) {
-            translationCache[trimmed] = preCleaned
-            return preCleaned
-        }
+        if (!CulinaryUtils.hasLatin(preCleaned)) { translationCache[trimmed] = preCleaned; return preCleaned }
 
         try {
             val encoded = URLEncoder.encode(preCleaned.take(1800), "UTF-8")
             val conn = (URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ru&dt=t").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
+                requestMethod = "POST"; doOutput = true
                 setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                 setRequestProperty("User-Agent", "Mozilla/5.0")
-                connectTimeout = 4500
-                readTimeout = 4500
+                connectTimeout = 4500; readTimeout = 4500
             }
             val response = try {
                 OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write("q=$encoded") }
                 conn.inputStream.bufferedReader().use { it.readText() }
-            } finally {
-                conn.disconnect()
-            }
+            } finally { conn.disconnect() }
             val outerArray = JSONArray(response).getJSONArray(0)
             val sb = StringBuilder()
             for (i in 0 until outerArray.length()) {
@@ -3198,17 +2112,6 @@ object RecipeRepository {
             }
         } catch (_: Exception) {}
 
-        try {
-            val encoded = URLEncoder.encode(preCleaned.take(800), "UTF-8")
-            val response = httpGet("https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=ru&q=$encoded", 4000)
-            val first = JSONArray(response).optString(0)
-            if (first.isNotBlank()) {
-                val finalClean = CulinaryUtils.normalizeAndTranslateCulinary(first)
-                translationCache[trimmed] = finalClean
-                return finalClean
-            }
-        } catch (_: Exception) {}
-
         translationCache[trimmed] = preCleaned
         return preCleaned
     }
@@ -3217,10 +2120,8 @@ object RecipeRepository {
         if (lines.isEmpty()) return@withPermit emptyList()
         val sanitizedLines = lines.map { CulinaryUtils.normalizeAndTranslateCulinary(it.replace("\r", " ").replace("\n", " ").trim()) }
         if (sanitizedLines.none { CulinaryUtils.hasLatin(it) }) return@withPermit sanitizedLines
-
         val combined = sanitizedLines.joinToString("\n")
-        val translatedBlock = translateEnToRu(combined)
-        val splitBack = translatedBlock.split("\n").map { CulinaryUtils.normalizeAndTranslateCulinary(it.trim()) }
+        val splitBack = translateEnToRu(combined).split("\n").map { CulinaryUtils.normalizeAndTranslateCulinary(it.trim()) }
         if (splitBack.size == lines.size) return@withPermit splitBack
         return@withPermit sanitizedLines.map { translateEnToRu(it) }
     }
@@ -3232,25 +2133,15 @@ object RecipeRepository {
             val mealsArray = JSONObject(response).optJSONArray("meals") ?: return@withContext emptyList()
             val limit = minOf(mealsArray.length(), 4)
             coroutineScope {
-                (0 until limit).map { i ->
-                    async { parseAndTranslateMealDbObject(mealsArray.getJSONObject(i), "Все", "Все", i) }
-                }.awaitAll().filterNotNull()
+                (0 until limit).map { i -> async { parseAndTranslateMealDbObject(mealsArray.getJSONObject(i), "Все", "Все", i) } }.awaitAll().filterNotNull()
             }
-        } catch (_: Exception) {
-            emptyList()
-        }
+        } catch (_: Exception) { emptyList() }
     }
 
-    private suspend fun parseAndTranslateMealDbObject(
-        detailObj: JSONObject,
-        requestedCuisine: String,
-        requestedCategory: String,
-        indexHint: Int
-    ): Recipe? {
+    private suspend fun parseAndTranslateMealDbObject(detailObj: JSONObject, requestedCuisine: String, requestedCategory: String, indexHint: Int): Recipe? {
         return try {
             val mealId = detailObj.getString("idMeal")
             mealDbDetailCache[mealId]?.let { return it }
-
             val enTitle = detailObj.optString("strMeal", "Dish")
             val enArea = detailObj.optString("strArea", "")
             val enCategory = detailObj.optString("strCategory", "")
@@ -3266,58 +2157,30 @@ object RecipeRepository {
                 }
             }
 
-            val enSteps = enInstructions
-                .replace("\r\n", "\n")
-                .split(Regex("(?<=[.!?])\\s+|\\n+"))
-                .map { it.trim() }
-                .filter { it.length > 8 }
-                .take(6)
-
-            val allLinesToTranslate = mutableListOf<String>().apply {
-                add(enTitle)
-                addAll(rawIngredients)
-                addAll(enSteps)
-            }
+            val enSteps = enInstructions.replace("\r\n", "\n").split(Regex("(?<=[.!?])\\s+|\\n+")).map { it.trim() }.filter { it.length > 8 }.take(6)
+            val allLinesToTranslate = mutableListOf<String>().apply { add(enTitle); addAll(rawIngredients); addAll(enSteps) }
             val translatedLines = translateBatchLinesEnToRu(allLinesToTranslate)
 
             val ruTitle = translatedLines.firstOrNull()?.replaceFirstChar { it.uppercase() } ?: "Блюдо мировой кухни"
             val ingCount = rawIngredients.size
-            val ruIngredients = translatedLines.drop(1).take(ingCount)
-                .map { it.replaceFirstChar { ch -> ch.uppercase() } }
-                .ifEmpty { listOf("Основные ингредиенты — 300 г") }
-
-            val ruStepsRaw = translatedLines.drop(1 + ingCount)
-            val finalSteps = CulinaryUtils.ensureValidInstructions(ruStepsRaw, ruTitle, ruIngredients)
+            val ruIngredients = translatedLines.drop(1).take(ingCount).map { it.replaceFirstChar { ch -> ch.uppercase() } }.ifEmpty { listOf("Основные ингредиенты — 300 г") }
+            val finalSteps = CulinaryUtils.ensureValidInstructions(translatedLines.drop(1 + ingCount), ruTitle, ruIngredients)
 
             val realRussianCuisine = CulinaryUtils.resolveRealCuisine(enArea, ruTitle, requestedCuisine)
             val realRussianCategory = CulinaryUtils.resolveRealCategory(enCategory, ruTitle, requestedCategory)
             val dishDesc = CulinaryUtils.buildDishDescription(ruTitle, realRussianCuisine, realRussianCategory, ruIngredients)
-
-            val mainPhoto = detailObj.optString("strMealThumb", "")
-            val dishPhotos = CulinaryUtils.buildDishPhotoUrls(
-                dishNameForPrompt = enTitle,
-                seedBase = mealId.hashCode() and 0x7FFF,
-                primaryThumbUrl = mainPhoto
-            )
+            val dishPhotos = CulinaryUtils.buildDishPhotoUrls(enTitle, mealId.hashCode() and 0x7FFF, detailObj.optString("strMealThumb", ""))
 
             val built = Recipe(
-                id = "mealdb_$mealId",
-                title = ruTitle,
-                description = dishDesc,
-                cuisine = realRussianCuisine,
-                category = realRussianCategory,
-                cookingTime = "${25 + (indexHint * 5) % 35} мин",
-                difficulty = "Средне",
-                calories = 220 + (indexHint * 25) % 180,
-                imageUrls = dishPhotos,
-                ingredients = ruIngredients,
-                instructions = finalSteps
+                id = "mealdb_$mealId", title = ruTitle, description = dishDesc,
+                cuisine = realRussianCuisine, category = realRussianCategory,
+                cookingTime = "${25 + (indexHint * 5) % 35} мин", difficulty = "Средне",
+                calories = 220 + (indexHint * 25) % 180, imageUrls = dishPhotos,
+                ingredients = ruIngredients, instructions = finalSteps
             )
             mealDbDetailCache[mealId] = built
             built
-        } catch (_: Exception) {
-            null
-        }
+        } catch (_: Exception) { null }
     }
 
     private fun extractStepsFromJsonObject(obj: JSONObject, title: String, ingredients: List<String>): List<String> {
@@ -3333,45 +2196,27 @@ object RecipeRepository {
     }
 
     suspend fun fetchAiRussianRecipes(
-        cuisine: String,
-        category: String,
-        fridgeItems: List<String>,
-        customRecipes: List<Recipe>,
-        voicePrompt: String?,
-        count: Int,
-        refreshSeed: Int
+        cuisine: String, category: String, fridgeItems: List<String>, customRecipes: List<Recipe>,
+        voicePrompt: String?, count: Int, refreshSeed: Int
     ): List<Recipe> = withContext(Dispatchers.IO) {
         try {
-            val fridgeText = if (fridgeItems.isNotEmpty()) "Обязательно используй продукты: ${fridgeItems.joinToString(", ")}." else ""
+            val fridgeText = if (fridgeItems.isNotEmpty()) "Используй продукты: ${fridgeItems.joinToString(", ")}." else ""
             val voiceText = if (!voicePrompt.isNullOrBlank()) "Запрос: $voicePrompt." else ""
             val recentAiList = synchronized(recentlyShownAiTitles) { recentlyShownAiTitles.toList().takeLast(12) }
-            val excludeText = if (recentAiList.isNotEmpty()) "НЕ ПОВТОРЯЙ эти блюда: ${recentAiList.joinToString(", ")}." else ""
-
-            val culinaryStyles = listOf(
-                "традиционные и аутентичные блюда",
-                "популярные ресторанные хиты и стрит-фуд",
-                "ароматные домашние блюда с насыщенным вкусом",
-                "необычные и оригинальные рецепты шеф-поваров"
-            )
-            val styleHint = culinaryStyles[refreshSeed % culinaryStyles.size]
+            val excludeText = if (recentAiList.isNotEmpty()) "Не повторяй: ${recentAiList.joinToString(", ")}." else ""
             val askCount = minOf(count, 6)
-            val strictCuisineInstruction = if (cuisine == "Все") {
-                "разные страны мира (укажи реальную кухню для каждого блюда: Русская, Корейская, Итальянская, Японская, Французская, Грузинская, Мексиканская, Китайская, Тайская)"
-            } else {
-                "СТРОГО ТОЛЬКО «$cuisine» кухня!"
-            }
+            val strictCuisineInstruction = if (cuisine == "Все") "разные страны мира (укажи реальную кухню каждого блюда)" else "СТРОГО ТОЛЬКО «$cuisine» кухня!"
 
             val userPrompt = """
-                Партия №${refreshSeed + 1} ($styleHint). Создай $askCount новых рецептов на русском языке.
-                Кухня: $strictCuisineInstruction. Категория: ${if (category == "Все") "разные категории" else "СТРОГО «$category»"}.
+                Партия №${refreshSeed + 1}. Создай $askCount новых рецептов на русском языке.
+                Кухня: $strictCuisineInstruction. Категория: ${if (category == "Все") "разные" else "СТРОГО «$category»"}.
                 $fridgeText $voiceText $excludeText
                 Верни ТОЛЬКО JSON массив:
-                [{"title":"Название","description":"Краткое описание блюда","englishName":"dish name","cuisine":"${if (cuisine == "Все") "Точная кухня" else cuisine}","category":"${if (category == "Все") "Точная категория" else category}","cookingTime":"35 мин","difficulty":"Легко","calories":250,"ingredients":["Продукт - 200 г"],"instructions":["Шаг 1. Подготовьте продукты.","Шаг 2. Обжарьте 10 минут.","Шаг 3. Варите 15 минут."]}]
+                [{"title":"Название","description":"Краткое описание","englishName":"dish name","cuisine":"${if (cuisine == "Все") "Точная кухня" else cuisine}","category":"${if (category == "Все") "Точная категория" else category}","cookingTime":"35 мин","difficulty":"Легко","calories":250,"ingredients":["Продукт - 200 г"],"instructions":["Шаг 1. Подготовьте продукты.","Шаг 2. Обжарьте 10 минут.","Шаг 3. Варите 15 минут."]}]
             """.trimIndent()
 
             val payload = JSONObject().apply {
-                put("model", "openai")
-                put("seed", Random.nextInt(1, 999999))
+                put("model", "openai"); put("seed", Random.nextInt(1, 999999))
                 put("messages", JSONArray().apply {
                     put(JSONObject().put("role", "system").put("content", "Отвечай строго валидным JSON массивом рецептов на русском языке."))
                     put(JSONObject().put("role", "user").put("content", userPrompt))
@@ -3379,39 +2224,29 @@ object RecipeRepository {
             }
 
             val conn = (URL("https://text.pollinations.ai/").openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                doOutput = true
+                requestMethod = "POST"; doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=UTF-8")
                 setRequestProperty("User-Agent", "Mozilla/5.0")
-                connectTimeout = 12000
-                readTimeout = 16000
+                connectTimeout = 12000; readTimeout = 16000
             }
-
             val responseText = try {
                 OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(payload.toString()) }
                 conn.inputStream.bufferedReader().use { it.readText() }
-            } finally {
-                conn.disconnect()
-            }
+            } finally { conn.disconnect() }
 
             val startBracket = responseText.indexOf('[')
             val endBracket = responseText.lastIndexOf(']')
             if (startBracket != -1 && endBracket > startBracket) {
                 val jsonArray = JSONArray(responseText.substring(startBracket, endBracket + 1))
                 val aiResult = mutableListOf<Recipe>()
-
                 for (i in 0 until jsonArray.length()) {
                     val obj = jsonArray.getJSONObject(i)
                     val ruTitle = translateEnToRu(obj.optString("title", "Авторское блюдо #${i + 1}"))
                     recentlyShownAiTitles.add(ruTitle)
-
                     val engDish = obj.optString("englishName", ruTitle)
                     val dishPhotos = CulinaryUtils.buildDishPhotoUrls(engDish, refreshSeed * 100 + i * 17)
-
                     val ingArr = obj.optJSONArray("ingredients") ?: JSONArray()
-                    val ingList = List(ingArr.length()) { translateEnToRu(ingArr.getString(it)) }
-                        .ifEmpty { listOf("Основные ингредиенты - 300 г", "Специи по вкусу") }
-
+                    val ingList = List(ingArr.length()) { translateEnToRu(ingArr.getString(it)) }.ifEmpty { listOf("Основные ингредиенты - 300 г") }
                     val stepsList = extractStepsFromJsonObject(obj, ruTitle, ingList).map { translateEnToRu(it) }
                     val realCuisine = if (cuisine != "Все") cuisine else CulinaryUtils.resolveRealCuisine(obj.optString("cuisine", ""), ruTitle, cuisine)
                     val realCategory = if (category != "Все") category else CulinaryUtils.resolveRealCategory(obj.optString("category", ""), ruTitle, category)
@@ -3420,63 +2255,37 @@ object RecipeRepository {
 
                     aiResult.add(
                         Recipe(
-                            id = "ai_${refreshSeed}_${ruTitle.hashCode()}_$i",
-                            title = ruTitle,
-                            description = finalDesc,
-                            cuisine = realCuisine,
-                            category = realCategory,
+                            id = "ai_${refreshSeed}_${ruTitle.hashCode()}_$i", title = ruTitle, description = finalDesc,
+                            cuisine = realCuisine, category = realCategory,
                             cookingTime = CulinaryUtils.normalizeAndTranslateCulinary(obj.optString("cookingTime", "35 мин")),
-                            difficulty = translateEnToRu(obj.optString("difficulty", "Средне")),
-                            calories = obj.optInt("calories", 250),
-                            imageUrls = dishPhotos,
-                            ingredients = ingList,
-                            instructions = stepsList
+                            difficulty = translateEnToRu(obj.optString("difficulty", "Средне")), calories = obj.optInt("calories", 250),
+                            imageUrls = dishPhotos, ingredients = ingList, instructions = stepsList
                         )
                     )
                 }
                 if (aiResult.isNotEmpty()) {
                     if (aiResult.size < count) {
                         val existingTitles = aiResult.map { it.title }.toSet()
-                        val extra = buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
-                            .filter { !existingTitles.contains(it.title) }
-                        aiResult.addAll(extra)
+                        aiResult.addAll(buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed).filter { !existingTitles.contains(it.title) })
                     }
                     return@withContext aiResult.take(count)
                 }
             }
         } catch (_: Exception) {}
-
         return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
     suspend fun fetchTranslatedMealDbRecipes(
-        cuisine: String,
-        category: String,
-        fridgeItems: List<String>,
-        customRecipes: List<Recipe>,
-        count: Int,
-        refreshSeed: Int
+        cuisine: String, category: String, fridgeItems: List<String>, customRecipes: List<Recipe>,
+        count: Int, refreshSeed: Int
     ): List<Recipe> = withContext(Dispatchers.IO) {
         try {
-            val areaMap = mapOf(
-                "Русская" to "Russian", "Французская" to "French", "Итальянская" to "Italian",
-                "Японская" to "Japanese", "Мексиканская" to "Mexican", "Китайская" to "Chinese",
-                "Тайская" to "Thai", "Индийская" to "Indian"
-            )
-
+            val areaMap = mapOf("Русская" to "Russian", "Французская" to "French", "Итальянская" to "Italian", "Японская" to "Japanese", "Мексиканская" to "Mexican", "Китайская" to "Chinese", "Тайская" to "Thai", "Индийская" to "Indian")
             if (cuisine != "Все" && !areaMap.containsKey(cuisine)) {
                 return@withContext fetchAiRussianRecipes(cuisine, category, fridgeItems, customRecipes, null, count, refreshSeed)
             }
-
-            val ingredientRuToEn = mapOf(
-                "курица" to "chicken", "яйца" to "egg", "картофель" to "potatoes", "сыр" to "cheese",
-                "томаты" to "tomatoes", "молоко" to "milk", "рис" to "rice", "фарш" to "beef",
-                "говядина" to "beef", "свинина" to "pork", "грибы" to "mushrooms", "капуста" to "cabbage"
-            )
-            val categoryMap = mapOf(
-                "Супы" to "Starter", "Каши и завтраки" to "Breakfast", "Вторые блюда" to "Beef",
-                "Выпечка" to "Dessert", "Что-то к чаю" to "Dessert", "Салаты" to "Side", "Паста и пицца" to "Pasta"
-            )
+            val ingredientRuToEn = mapOf("курица" to "chicken", "яйца" to "egg", "картофель" to "potatoes", "сыр" to "cheese", "томаты" to "tomatoes", "молоко" to "milk", "рис" to "rice", "фарш" to "beef", "говядина" to "beef", "свинина" to "pork", "грибы" to "mushrooms", "капуста" to "cabbage")
+            val categoryMap = mapOf("Супы" to "Starter", "Каши и завтраки" to "Breakfast", "Вторые блюда" to "Beef", "Выпечка" to "Dessert", "Что-то к чаю" to "Dessert", "Салаты" to "Side", "Паста и пицца" to "Pasta")
 
             val firstFridgeEn = fridgeItems.firstNotNullOfOrNull { ingredientRuToEn[it.trim().lowercase()] }
             val rotatedLetter = searchLetters[refreshSeed % searchLetters.size]
@@ -3492,67 +2301,44 @@ object RecipeRepository {
 
             val listResponse = httpGet(endpointUrl, 5500)
             val mealsArray = JSONObject(listResponse).optJSONArray("meals")
-
             if (mealsArray != null && mealsArray.length() > 0) {
                 val allCandidateObjects = List(mealsArray.length()) { mealsArray.getJSONObject(it) }
                 val unseenCandidates = allCandidateObjects.filter { !recentlyShownMealDbIds.contains(it.optString("idMeal")) }.shuffled()
                 val seenCandidates = allCandidateObjects.filter { recentlyShownMealDbIds.contains(it.optString("idMeal")) }.shuffled()
-
-                val prioritizedCandidates = if (unseenCandidates.isNotEmpty()) {
-                    unseenCandidates + seenCandidates
-                } else {
-                    recentlyShownMealDbIds.clear()
-                    allCandidateObjects.shuffled()
-                }
-
-                val fetchLimit = minOf(count, minOf(prioritizedCandidates.size, 8))
-                val selectedBatch = prioritizedCandidates.take(fetchLimit)
+                val prioritizedCandidates = if (unseenCandidates.isNotEmpty()) unseenCandidates + seenCandidates else { recentlyShownMealDbIds.clear(); allCandidateObjects.shuffled() }
+                val selectedBatch = prioritizedCandidates.take(minOf(count, minOf(prioritizedCandidates.size, 8)))
 
                 val parallelResults = coroutineScope {
                     selectedBatch.mapIndexed { i, mealSummary ->
                         async {
                             val mealId = mealSummary.optString("idMeal", "")
                             if (mealId.isNotEmpty()) recentlyShownMealDbIds.add(mealId)
-
-                            val detailObj = if (mealSummary.has("strInstructions") && mealSummary.has("strArea")) {
-                                mealSummary
-                            } else {
+                            val detailObj = if (mealSummary.has("strInstructions") && mealSummary.has("strArea")) mealSummary else {
                                 val detailResponse = httpGet("https://www.themealdb.com/api/json/v1/1/lookup.php?i=$mealId", 5500)
                                 JSONObject(detailResponse).getJSONArray("meals").getJSONObject(0)
                             }
                             parseAndTranslateMealDbObject(detailObj, cuisine, category, i)
                         }
-                    }.awaitAll().filterNotNull()
-                        .filter { recipe -> cuisine == "Все" || recipe.cuisine.equals(cuisine, ignoreCase = true) }
-                        .toMutableList()
+                    }.awaitAll().filterNotNull().filter { r -> cuisine == "Все" || r.cuisine.equals(cuisine, ignoreCase = true) }.toMutableList()
                 }
-
                 if (parallelResults.isNotEmpty()) {
                     if (parallelResults.size < count) {
                         val existingIds = parallelResults.map { it.id }.toSet()
-                        val extra = buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
-                            .filter { !existingIds.contains(it.id) }
-                        parallelResults.addAll(extra)
+                        parallelResults.addAll(buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed).filter { !existingIds.contains(it.id) })
                     }
                     return@withContext parallelResults.take(count)
                 }
             }
         } catch (_: Exception) {}
-
         return@withContext buildLocalDatabaseRecipes(cuisine, category, fridgeItems, customRecipes, count, refreshSeed)
     }
 
     fun buildLocalDatabaseRecipes(
-        cuisine: String,
-        category: String,
-        fridgeItems: List<String>,
-        customRecipes: List<Recipe>,
-        count: Int,
-        refreshSeed: Int
+        cuisine: String, category: String, fridgeItems: List<String>, customRecipes: List<Recipe>,
+        count: Int, refreshSeed: Int
     ): List<Recipe> {
         val randomForBatch = Random(refreshSeed * 31 + 7)
-        val shuffledPool = CURATED_LOCAL_RECIPES.shuffled(randomForBatch)
-        val allRecipes = customRecipes + shuffledPool
+        val allRecipes = customRecipes + CURATED_LOCAL_RECIPES.shuffled(randomForBatch)
         val fridgeStems = CulinaryUtils.computeFridgeStems(fridgeItems)
 
         val exactMatches = allRecipes.filter { r ->
@@ -3562,30 +2348,22 @@ object RecipeRepository {
 
         if (exactMatches.size < count && cuisine != "Все") {
             val usedIds = exactMatches.map { it.id }.toMutableSet()
-            val sameCuisineOtherCat = allRecipes.filter { r -> !usedIds.contains(r.id) && r.cuisine.equals(cuisine, ignoreCase = true) }.shuffled(randomForBatch)
-            for (r in sameCuisineOtherCat) {
-                if (exactMatches.size < count) { exactMatches.add(r); usedIds.add(r.id) }
-            }
+            allRecipes.filter { !usedIds.contains(it.id) && it.cuisine.equals(cuisine, ignoreCase = true) }.shuffled(randomForBatch)
+                .forEach { if (exactMatches.size < count) { exactMatches.add(it); usedIds.add(it.id) } }
         } else if (exactMatches.size < count && cuisine == "Все" && category != "Все") {
             val usedIds = exactMatches.map { it.id }.toMutableSet()
-            val sameCategoryOtherCuisine = allRecipes.filter { r -> !usedIds.contains(r.id) && r.category.equals(category, ignoreCase = true) }.shuffled(randomForBatch)
-            for (r in sameCategoryOtherCuisine) {
-                if (exactMatches.size < count) { exactMatches.add(r); usedIds.add(r.id) }
-            }
+            allRecipes.filter { !usedIds.contains(it.id) && it.category.equals(category, ignoreCase = true) }.shuffled(randomForBatch)
+                .forEach { if (exactMatches.size < count) { exactMatches.add(it); usedIds.add(it.id) } }
         }
 
         if (exactMatches.size > 1 && refreshSeed > 0) {
             val shift = (refreshSeed * 2) % exactMatches.size
             val rotated = exactMatches.drop(shift) + exactMatches.take(shift)
-            exactMatches.clear()
-            exactMatches.addAll(rotated)
+            exactMatches.clear(); exactMatches.addAll(rotated)
         }
 
         if (fridgeStems.isNotEmpty()) {
-            exactMatches.sortWith(
-                compareByDescending<Recipe> { it.isCustom }
-                    .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientMatchingStems(it, fridgeStems) } }
-            )
+            exactMatches.sortWith(compareByDescending<Recipe> { it.isCustom }.thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientMatchingStems(it, fridgeStems) } })
         }
 
         if (exactMatches.isNotEmpty() && exactMatches.size < count) {
@@ -3595,362 +2373,41 @@ object RecipeRepository {
             while (exactMatches.size < count) {
                 val template = baseList[idx % baseList.size]
                 val style = styles[(idx + refreshSeed) % styles.size]
-                exactMatches.add(
-                    template.copy(
-                        id = "${template.id}_var_${refreshSeed}_$idx",
-                        title = "${template.title} ($style)",
-                        cookingTime = "${(template.cookingMinutes - 5).coerceAtLeast(15) + (idx * 5) % 20} мин"
-                    )
-                )
+                exactMatches.add(template.copy(id = "${template.id}_var_${refreshSeed}_$idx", title = "${template.title} ($style)", cookingTime = "${(template.cookingMinutes - 5).coerceAtLeast(15) + (idx * 5) % 20} мин"))
                 idx++
             }
         }
-
         return exactMatches.take(count)
     }
 
     private val CURATED_LOCAL_RECIPES = listOf(
-        Recipe(
-            id = "loc_borscht", title = "Классический борщ с говядиной и сметаной",
-            description = "Традиционный густой суп насыщенного рубинового цвета на наваристом говяжьем бульоне со свеклой, свежей капустой и чесноком.",
-            cuisine = "Русская", category = "Супы", cookingTime = "1 ч 20 мин", difficulty = "Средне", calories = 135,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/vvstvq1487342592.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600", "https://images.unsplash.com/photo-1603105037880-880cd4edfb0d?w=600"),
-            ingredients = listOf("Говядина на кости - 500 г", "Свекла - 2 шт.", "Капуста белокочанная - 300 г", "Картофель - 4 шт.", "Томатная паста - 2 ст.л.", "Сметана - 3 ст.л."),
-            instructions = listOf(
-                "Сварите наваристый бульон из говядины в течение 45 минут, затем достаньте мясо и нарежьте кусочками.",
-                "В кипящий бульон отправьте нарезанный кубиками картофель и нашинкованную капусту, варите 15 минут.",
-                "Обжарьте на сковороде тертую свеклу, морковь и лук с томатной пастой в течение 8 минут.",
-                "Соедините зажарку с супом, добавьте чеснок и лавровый лист, томите под крышкой еще 10 минут."
-            )
-        ),
-        Recipe(
-            id = "loc_chicken_rice", title = "Курица с рисом и овощами на одной сковороде",
-            description = "Удобное и сытное домашнее блюдо в одной посуде: сочные кусочки курицы и рассыпчатый рис, пропитанные ароматом чеснока и моркови.",
-            cuisine = "Русская", category = "Вторые блюда", cookingTime = "40 мин", difficulty = "Легко", calories = 240,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/sypxpx1515365095.jpg", "https://images.unsplash.com/photo-1512058564366-18510be2db19?w=600", "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?w=600"),
-            ingredients = listOf("Курица (филе или бедра) - 500 г", "Рис длиннозерный - 250 г", "Морковь - 1 шт.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Масло растительное - 2 ст.л."),
-            instructions = listOf(
-                "Нарежьте курицу небольшими кусочками и обжарьте на сковороде до золотистой корочки в течение 8 минут.",
-                "Добавьте нарезанный лук и тертую морковь, обжаривайте вместе еще 5 минут.",
-                "Всыпьте промытый рис, разровняйте, влейте 500 мл горячей подсоленной воды и убавьте огонь до минимума.",
-                "Накройте плотной крышкой и томите 20 минут, пока рис полностью не впитает бульон."
-            )
-        ),
-        Recipe(
-            id = "loc_kartoshka", title = "Домашнее пирожное «Картошка» с соленой карамелью",
-            description = "Знаменитый шоколадно-песочный десерт без выпечки с бархатистой текстурой какао и насыщенным вкусом карамельной сгущенки.",
-            cuisine = "Русская", category = "Что-то к чаю", cookingTime = "30 мин", difficulty = "Легко", calories = 380,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/tqtywx1468317395.jpg", "https://www.themealdb.com/images/media/meals/qxutws1486978099.jpg", "https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=600"),
-            ingredients = listOf("Печенье песочное - 400 г", "Вареная сгущенка (соленая карамель) - 250 г", "Сливочное масло - 100 г", "Какао-порошок - 4 ст.л."),
-            instructions = listOf(
-                "Измельчите песочное печенье в мелкую крошку с помощью блендера или скалки.",
-                "Смешайте крошку с 3 столовыми ложками какао, мягким сливочным маслом и карамельной сгущенкой.",
-                "Сформируйте руками аккуратные овальные пирожные и обваляйте их в оставшемся какао.",
-                "Уберите пирожные в холодильник на 20 минут для застывания перед подачей к чаю."
-            )
-        ),
-        Recipe(
-            id = "loc_syrniki", title = "Пышные творожные сырники на завтрак",
-            description = "Нежные домашние сырники с румяной золотистой корочкой и мягкой творожной серединкой, подаются со сметаной или ягодами.",
-            cuisine = "Русская", category = "Каши и завтраки", cookingTime = "25 мин", difficulty = "Легко", calories = 220,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/rwuyqx1511383174.jpg", "https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=600", "https://images.unsplash.com/photo-1528207776546-365bb710ee93?w=600"),
-            ingredients = listOf("Творог 9% - 400 г", "Яйца - 1 шт.", "Мука пшеничная или рисовая - 3 ст.л.", "Сахар - 2 ст.л.", "Сметана - 3 ст.л."),
-            instructions = listOf(
-                "Протрите творог вилкой, добавьте яйцо, сахар и щепотку ванилина, тщательно перемешайте.",
-                "Всыпьте муку и замесите мягкую творожную массу, сформуйте ровные круглые шайбочки.",
-                "Обжаривайте сырники на разогретой сковороде на среднем огне по 5 минут с каждой стороны до румяной корочки."
-            )
-        ),
-        Recipe(
-            id = "loc_stroganoff", title = "Бефстроганов из говядины с грибами в сметанном соусе",
-            description = "Классическое блюдо русской кухни: тонкие ломтики сочной говядины, томленные с шампиньонами и луком в густом сливочно-сметанном соусе.",
-            cuisine = "Русская", category = "Вторые блюда", cookingTime = "45 мин", difficulty = "Средне", calories = 265,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/svprys1511176755.jpg", "https://www.themealdb.com/images/media/meals/ursuup1487348423.jpg", "https://images.unsplash.com/photo-1544025162-d76694265947?w=600"),
-            ingredients = listOf("Говядина (вырезка) - 500 г", "Грибы шампиньоны - 250 г", "Сметана 20% - 200 г", "Лук репчатый - 2 шт.", "Мука - 1 ст.л."),
-            instructions = listOf(
-                "Нарежьте говядину тонкими брусочками и быстро обжарьте на сильном огне в течение 6 минут.",
-                "Отдельно обжарьте нарезанный лук и ломтики шампиньонов в течение 8 минут до золотистости.",
-                "Соедините мясо с грибами, присыпьте столовой ложкой муки, добавьте сметану и 100 мл теплой воды.",
-                "Тушите под крышкой на слабом огне 15 минут до загустения нежного соуса."
-            )
-        ),
-        Recipe(
-            id = "loc_charlottka", title = "Пышная домашняя шарлотка с яблоками и корицей",
-            description = "Воздушный бисквитный пирог с сочной кисло-сладкой яблочной начинкой и теплым пряным ароматом молотой корицы.",
-            cuisine = "Русская", category = "Выпечка", cookingTime = "45 мин", difficulty = "Легко", calories = 250,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/qtqvys1468573168.jpg", "https://www.themealdb.com/images/media/meals/xvsurr1511719182.jpg", "https://images.unsplash.com/photo-1568571780765-9276ac8b75a2?w=600"),
-            ingredients = listOf("Яблоки кисло-сладкие - 4 шт.", "Яйца - 4 шт.", "Сахар - 150 г", "Мука - 160 г", "Корица молотая - 1 ч.л."),
-            instructions = listOf(
-                "Взбейте яйца с сахаром миксером в пышную светлую пену в течение 5 минут.",
-                "Аккуратно просейте муку и перемешайте лопаткой снизу вверх, чтобы тесто осталось воздушным.",
-                "Выложите дольки яблок с корицей в смазанную форму, залейте тестом и выпекайте 35 минут при 180°C."
-            )
-        ),
-        Recipe(
-            id = "loc_olivier", title = "Домашний салат Оливье с куриным филе",
-            description = "Любимый праздничный и повседневный салат из нежного куриного филе, отварных овощей, маринованных огурчиков и зеленого горошка.",
-            cuisine = "Русская", category = "Салаты", cookingTime = "30 мин", difficulty = "Легко", calories = 195,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/1549542994.jpg", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600", "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600"),
-            ingredients = listOf("Курица отварная - 300 г", "Картофель - 3 шт.", "Яйца - 3 шт.", "Морковь - 1 шт.", "Огурцы маринованные - 3 шт.", "Горошек зеленый - 150 г"),
-            instructions = listOf(
-                "Отварите картофель, морковь и яйца в течение 20 минут, остудите и очистите.",
-                "Нарежьте куриное филе, овощи и яйца одинаковыми мелкими кубиками.",
-                "Добавьте зеленый горошек, заправьте сметаной или майонезом и охладите в холодильнике 10 минут."
-            )
-        ),
-        Recipe(
-            id = "loc_kimchi_soup", title = "Острый корейский суп Кимчи Тиге со свининой и тофу",
-            description = "Знаменитый согревающий суп корейской кухни с пикантной ферментированной капустой кимчи, нежным сыром тофу и мясом.",
-            cuisine = "Корейская", category = "Супы", cookingTime = "35 мин", difficulty = "Легко", calories = 190,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/1529446352.jpg", "https://images.unsplash.com/photo-1583224964978-2257b960c3d3?w=600", "https://images.unsplash.com/photo-1553163147-622ab57be1c7?w=600"),
-            ingredients = listOf("Капуста кимчи - 300 г", "Свинина или курица - 250 г", "Сыр тофу - 150 г", "Яйца - 1 шт.", "Лук зеленый - 1 пучок"),
-            instructions = listOf(
-                "Нарежьте мясо и капусту кимчи кусочками и обжарьте в глубокой кастрюле в течение 7 минут.",
-                "Влейте 600 мл горячей воды или бульона, доведите до кипения и варите на среднем огне 15 минут.",
-                "Добавьте нарезанный кубиками сыр тофу, вбейте яйцо и варите еще 4 минуты, посыпав зеленым луком."
-            )
-        ),
-        Recipe(
-            id = "loc_korean_chicken", title = "Хрустящая курица по-корейски в кисло-сладком соусе Яннём",
-            description = "Популярный корейский хит: кусочки курицы в тонкой хрустящей корочке, покрытые глянцевой медово-чесночной глазурью с кунжутом.",
-            cuisine = "Корейская", category = "Вторые блюда", cookingTime = "40 мин", difficulty = "Средне", calories = 310,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/1529444830.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg", "https://images.unsplash.com/photo-1562967914-608f82629710?w=600"),
-            ingredients = listOf("Курица (филе или крылышки) - 600 г", "Крахмал кукурузный - 4 ст.л.", "Чеснок - 3 зубчика", "Томатный соус - 3 ст.л.", "Мед - 2 ст.л.", "Кунжут - 1 ст.л."),
-            instructions = listOf(
-                "Нарежьте курицу кусочками, обваляйте в кукурузном крахмале и обжарьте в масле 12 минут до хрустящей корочки.",
-                "В отдельной сковороде смешайте измельченный чеснок, томатный соус, соевый соус и мед, прогрейте 3 минуты.",
-                "Переложите хрустящую курицу в горячий соус, быстро перемешайте и посыпьте семенами кунжута."
-            )
-        ),
-        Recipe(
-            id = "loc_bibimbap", title = "Пибимпап (Корейский рис с говядиной, овощами и яйцом)",
-            description = "Красочная корейская чаша на основе теплого риса, украшенная обжаренным пряным мясом, соломкой овощей и яичницей с жидким желтком.",
-            cuisine = "Корейская", category = "Вторые блюда", cookingTime = "30 мин", difficulty = "Легко", calories = 275,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/z0ageb1583189517.jpg", "https://images.unsplash.com/photo-1553163147-622ab57be1c7?w=600", "https://images.unsplash.com/photo-1590301157890-4810ed352733?w=600"),
-            ingredients = listOf("Рис круглозерный - 250 г", "Фарш говяжий - 250 г", "Яйца - 2 шт.", "Морковь - 1 шт.", "Огурец - 1 шт.", "Соевый соус - 2 ст.л."),
-            instructions = listOf(
-                "Отварите рис в подсоленной воде в течение 15 минут до рассыпчатости.",
-                "Обжарьте говяжий фарш с соевым соусом и чесноком в течение 8 минут, отдельно поджарьте соломку моркови 4 минуты.",
-                "Поджарьте яичницу-глазунью в течение 3 минут, выложите на горячий рис вместе с мясом и овощами."
-            )
-        ),
-        Recipe(
-            id = "loc_bulgogi", title = "Пулькоги (Мраморная говядина по-корейски в кунжутном маринаде)",
-            description = "Тончайшие ломтики говядины, маринованные в соевом соусе с чесноком и медом, быстро обжаренные на сильном огне с луком.",
-            cuisine = "Корейская", category = "Вторые блюда", cookingTime = "25 мин", difficulty = "Легко", calories = 260,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/1529443236.jpg", "https://www.themealdb.com/images/media/meals/1529444113.jpg", "https://images.unsplash.com/photo-1544025162-d76694265947?w=600"),
-            ingredients = listOf("Говядина - 500 г", "Соевый соус - 4 ст.л.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Сахар или мед - 1 ст.л.", "Кунжут - 1 ст.л."),
-            instructions = listOf(
-                "Тонко нарежьте говядину и замаринуйте в соевом соусе с измельченным чесноком и медом на 10 минут.",
-                "Разогрейте сковороду на сильном огне, выложите мясо с полукольцами лука и обжаривайте 8 минут, помешивая.",
-                "Посыпьте готовое мясо обжаренным кунжутом и зеленым луком, подавайте с рисом."
-            )
-        ),
-        Recipe(
-            id = "loc_korean_carrots", title = "Пикантный корейский салат из моркови с чесноком и кориандром",
-            description = "Хрустящая сочная морковь, нашинкованная тонкой соломкой и заправленная горячим пряным маслом с чесноком и молотым кориандром.",
-            cuisine = "Корейская", category = "Салаты", cookingTime = "20 мин", difficulty = "Легко", calories = 145,
-            imageUrls = listOf("https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"),
-            ingredients = listOf("Морковь сочная - 500 г", "Чеснок - 4 зубчика", "Масло растительное - 4 ст.л.", "Уксус яблочный - 2 ст.л.", "Кориандр молотый - 1 ч.л.", "Сахар - 1 ч.л."),
-            instructions = listOf(
-                "Натрите морковь длинной тонкой соломкой, посыпьте солью и сахаром, слегка помните руками в течение 3 минут.",
-                "Выложите сверху горкой измельченный чеснок и молотый кориандр.",
-                "Раскалите растительное масло на сковороде в течение 4 минут, вылейте прямо на чеснок со специями, добавьте уксус и перемешайте."
-            )
-        ),
-        Recipe(
-            id = "loc_gyeran_mari", title = "Керан Мари (Пышный корейский яичный рулет с сыром и овощами)",
-            description = "Традиционный корейский завтрак: многослойный нежный омлет-рулет с тягучим сыром внутри, нарезанный порционными кусочками.",
-            cuisine = "Корейская", category = "Каши и завтраки", cookingTime = "15 мин", difficulty = "Легко", calories = 210,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/1550440197.jpg", "https://images.unsplash.com/photo-1525351484163-7529414344d8?w=600"),
-            ingredients = listOf("Яйца - 4 шт.", "Молоко - 2 ст.л.", "Сыр твердый - 60 г", "Морковь - 0.5 шт.", "Лук зеленый - 2 пера"),
-            instructions = listOf(
-                "Взбейте яйца с молоком и солью, вмешайте очень мелко нарезанную морковь и зеленый лук.",
-                "Вылейте треть смеси тонким слоем на разогретую сковороду, жарьте 2 минуты, посыпьте сыром и сверните в рулет на край сковороды.",
-                "Долейте оставшуюся яичную смесь в 2 приема, каждый раз оборачивая рулет новыми слоями в течение 5 минут, затем нарежьте ломтиками."
-            )
-        ),
-        Recipe(
-            id = "loc_french_gratin", title = "Французский картофельный гратен Дофинуа со сливками и сыром",
-            description = "Изысканная французская запеканка из тончайших ломтиков картофеля, томленных в чесночных сливках под румяной сырной корочкой.",
-            cuisine = "Французская", category = "Вторые блюда", cookingTime = "50 мин", difficulty = "Легко", calories = 265,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/qwrtut1468418027.jpg", "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=600"),
-            ingredients = listOf("Картофель - 800 г", "Сыр твердый - 150 г", "Молоко или сливки - 300 мл", "Чеснок - 2 зубчика", "Сливочное масло - 30 г"),
-            instructions = listOf(
-                "Очистите картофель и нарежьте тонкими кружочками толщиной около 3 миллиметров.",
-                "Натрите форму для запекания зубчиком чеснока и сливочным маслом, уложите картофель внахлест.",
-                "Залейте горячими сливками с солью, посыпьте тертым сыром и запекайте 40 минут при 190°C до золотистой корочки."
-            )
-        ),
-        Recipe(
-            id = "loc_french_soup", title = "Французский луковый суп с сырными гренками",
-            description = "Классика парижских бистро: густой бульон из карамелизированного в сливочном масле лука, запеченный под шапкой из багета и тягучего сыра.",
-            cuisine = "Французская", category = "Супы", cookingTime = "45 мин", difficulty = "Средне", calories = 210,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/xvrrux1511783685.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"),
-            ingredients = listOf("Лук репчатый - 500 г", "Сыр твердый - 120 г", "Сливочное масло - 50 г", "Багет или белый хлеб - 4 ломтика", "Мясной бульон - 700 мл"),
-            instructions = listOf(
-                "Нарежьте лук тонкими полукольцами и томите на сливочном масле на медленном огне 20 минут до карамельного оттенка.",
-                "Влейте горячий бульон, посолите и варите на слабом огне еще 15 минут.",
-                "Разлейте суп по формам, сверху положите подсушенный багет, щедро посыпьте сыром и запекайте 5 минут в духовке."
-            )
-        ),
-        Recipe(
-            id = "loc_croissants", title = "Французские круассаны с запеченным миндальным кремом",
-            description = "Хрустящая слоеная выпечка с нежной орехово-сливочной начинкой франжипан и сахарной пудрой — идеальное дополнение к утреннему чаю или кофе.",
-            cuisine = "Французская", category = "Что-то к чаю", cookingTime = "30 мин", difficulty = "Легко", calories = 390,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/tlstrw1511724769.jpg", "https://www.themealdb.com/images/media/meals/wtqrqw1511639627.jpg", "https://images.unsplash.com/photo-1555507036-ab1f4038808a?w=600"),
-            ingredients = listOf("Готовые круассаны - 4 шт.", "Миндальная мука или орехи - 100 г", "Сливочное масло - 80 г", "Яйца - 2 шт.", "Сахарная пудра - 80 г"),
-            instructions = listOf(
-                "Взбейте размягченное сливочное масло с сахарной пудрой, яйцами и молотым миндалем в пышный крем.",
-                "Разрежьте круассаны вдоль пополам, щедро смажьте миндальным кремом внутри и сверху.",
-                "Запекайте в разогретой до 180°C духовке в течение 15 минут до хрустящей румяной корочки."
-            )
-        ),
-        Recipe(
-            id = "loc_julienne", title = "Французский жульен с курицей и грибами под сырной корочкой",
-            description = "Горячая сливочно-грибная закуска с нежным куриным филе и тягучей золотистой корочкой запеченного сыра.",
-            cuisine = "Французская", category = "Вторые блюда", cookingTime = "30 мин", difficulty = "Легко", calories = 280,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/uuuspp1511297945.jpg", "https://www.themealdb.com/images/media/meals/1548772327.jpg"),
-            ingredients = listOf("Курица (филе) - 300 г", "Грибы шампиньоны - 300 г", "Сыр твердый - 150 г", "Сливки или сметана - 200 г", "Лук репчатый - 1 шт."),
-            instructions = listOf(
-                "Мелко нарежьте куриное филе, грибы и лук, обжарьте на сковороде в течение 10 минут.",
-                "Влейте сливки или сметану, посолите и прогрейте смесь еще 4 минуты до легкого загустения.",
-                "Разложите по формам, обильно посыпьте тертым сыром и запекайте в духовке 12 минут при 190°C."
-            )
-        ),
-        Recipe(
-            id = "loc_carbonara", title = "Итальянская паста Карбонара с беконом и Пармезаном",
-            description = "Знаменитая римская паста с хрустящими ломтиками бекона и шелковистым соусом на основе яичных желтков и тертого сыра Пармезан.",
-            cuisine = "Итальянская", category = "Паста и пицца", cookingTime = "20 мин", difficulty = "Легко", calories = 340,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg", "https://images.unsplash.com/photo-1612874742237-6526221588e3?w=600", "https://images.unsplash.com/photo-1551183053-bf91a1d81141?w=600"),
-            ingredients = listOf("Спагетти - 300 г", "Бекон или грудинка - 150 г", "Яйца (желтки) - 3 шт.", "Сыр Пармезан - 80 г", "Чеснок - 2 зубчика"),
-            instructions = listOf(
-                "Отварите спагетти в кипящей подсоленной воде в течение 9 минут до состояния аль денте.",
-                "Нарежьте бекон ломтиками и обжарьте на сковороде с раздавленным зубчиком чеснока в течение 5 минут.",
-                "В миске взбейте яичные желтки с мелко натертым сыром и черным перцем, добавьте 3 ложки воды от пасты.",
-                "Переложите горячие спагетти к бекону, снимите с огня, влейте яично-сырный соус и энергично перемешайте."
-            )
-        ),
-        Recipe(
-            id = "loc_pizza", title = "Домашняя итальянская пицца Маргарита с томатами и Моцареллой",
-            description = "Классическая неаполитанская пицца на тонком тесте с ароматным томатным соусом, тягучей Моцареллой и свежим базиликом.",
-            cuisine = "Итальянская", category = "Паста и пицца", cookingTime = "30 мин", difficulty = "Легко", calories = 285,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/x0lk931587671540.jpg", "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=600", "https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600"),
-            ingredients = listOf("Тесто для пиццы - 400 г", "Сыр Моцарелла - 250 г", "Томаты спелые - 3 шт.", "Томатный соус - 4 ст.л.", "Масло оливковое и базилик"),
-            instructions = listOf(
-                "Раскатайте тесто в тонкую круглую лепешку и переложите на противень, застеленный пергаментом.",
-                "Смажьте основу томатным соусом с орегано, разложите кружочки томатов и ломтики сыра Моцарелла.",
-                "Выпекайте в максимально разогретой до 220°C духовке в течение 15 минут до расплавления сыра."
-            )
-        ),
-        Recipe(
-            id = "loc_caesar", title = "Салат Цезарь с обжаренной куриной грудкой, сыром и сухариками",
-            description = "Легкий и хрустящий салат из свежих листьев с румяными ломтиками куриного филе, чесночными гренками, черри и тертым сыром.",
-            cuisine = "Итальянская", category = "Салаты", cookingTime = "25 мин", difficulty = "Легко", calories = 215,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/urtwux1486983078.jpg", "https://images.unsplash.com/photo-1550304943-4f24f54ddde9?w=600"),
-            ingredients = listOf("Курица (филе) - 300 г", "Салат листовой или пекинская капуста - 1 пучок", "Томаты черри - 150 г", "Сыр твердый - 60 г", "Хлеб белый - 3 ломтика"),
-            instructions = listOf(
-                "Нарежьте белый хлеб кубиками и подсушите на сковороде с каплей масла и чесноком в течение 5 минут.",
-                "Обжарьте куриное филе со специями по 6 минут с каждой стороны, затем нарежьте ломтиками.",
-                "Порвите листья салата в глубокую тарелку, выложите курицу, половинки томатов, сухарики и посыпьте тертым сыром."
-            )
-        ),
-        Recipe(
-            id = "loc_khachapuri", title = "Грузинский хачапури по-аджарски с сыром и желтком",
-            description = "Знаменитая грузинская открытая лепешка-лодочка с расплавленным тягучим сыром Сулугуни, сливочным маслом и жидким яичным желтком.",
-            cuisine = "Грузинская", category = "Выпечка", cookingTime = "45 мин", difficulty = "Средне", calories = 330,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/sywswr1511383814.jpg", "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600"),
-            ingredients = listOf("Тесто дрожжевое - 400 г", "Сыр Сулугуни или Моцарелла - 350 г", "Яйца - 2 шт.", "Сливочное масло - 30 г"),
-            instructions = listOf(
-                "Раскатайте тесто в овал, сверните края трубочками к центру и защипните концы, формируя лодочку.",
-                "Натрите сыр на крупной терке, смешайте с двумя ложками воды и щедро наполните лодочку.",
-                "Выпекайте в разогретой до 200°C духовке в течение 20 минут до румяных бортиков.",
-                "Выньте хачапури, сделайте углубление в сыре, влейте желток и верните в духовку еще на 2 минуты."
-            )
-        ),
-        Recipe(
-            id = "loc_chkmeruli", title = "Чкмерули (Курица по-грузински в сливочно-чесночном соусе)",
-            description = "Румяная зажаренная курица, томленная в густом соусе из сливок, чеснока, кинзы и грузинских пряностей хмели-сунели.",
-            cuisine = "Грузинская", category = "Вторые блюда", cookingTime = "40 мин", difficulty = "Легко", calories = 290,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/qtuwxu1468233098.jpg", "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?w=600"),
-            ingredients = listOf("Курица - 700 г", "Сливки или молоко - 250 мл", "Чеснок - 5 зубчиков", "Кинза и петрушка - 1 пучок", "Хмели-сунели - 1 ч.л."),
-            instructions = listOf(
-                "Натрите кусочки курицы солью и обжарьте на сковороде под гнетом по 8 минут с каждой стороны до золотистой корочки.",
-                "Измельчите чеснок и зелень, смешайте с теплыми сливками и пряностью хмели-сунели.",
-                "Залейте курицу сливочно-чесночным соусом и томите на слабом огне 12 минут."
-            )
-        ),
-        Recipe(
-            id = "loc_ramen", title = "Японский домашний Рамен с курицей, лапшой и яйцом",
-            description = "Насыщенный японский суп с пшеничной лапшой, пряным соево-чесночным бульоном, ломтиками курицы, грибами и яйцом всмятку.",
-            cuisine = "Японская", category = "Супы", cookingTime = "35 мин", difficulty = "Легко", calories = 230,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/swttys1511385853.jpg", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600", "https://images.unsplash.com/photo-1557872943-16a5ac26437e?w=600"),
-            ingredients = listOf("Курица (филе) - 350 г", "Лапша пшеничная или рамен - 200 г", "Яйца - 2 шт.", "Грибы шампиньоны - 150 г", "Соевый соус - 3 ст.л."),
-            instructions = listOf(
-                "Сварите куриное филе в 1 литре воды с добавлением соевого соуса, чеснока и ломтиков грибов в течение 20 минут.",
-                "Отдельно отварите яйца всмятку ровно 6 минут после закипания, остудите в холодной воде и очистите.",
-                "Отварите лапшу в течение 4 минут, разложите по глубоким мискам, залейте горячим бульоном и украсьте ломтиками курицы и половинками яйца."
-            )
-        ),
-        Recipe(
-            id = "loc_teriyaki", title = "Курица Терияки с кунжутом и рассыпчатым рисом",
-            description = "Быстрое японское блюдо: сочные кусочки курицы, карамелизированные в густом сладко-соленом соусе терияки с рассыпчатым рисом.",
-            cuisine = "Японская", category = "Вторые блюда", cookingTime = "25 мин", difficulty = "Легко", calories = 245,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/wvpsxx1468256321.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"),
-            ingredients = listOf("Курица (филе или бедра) - 500 г", "Рис - 200 г", "Соевый соус - 4 ст.л.", "Мед или сахар - 2 ст.л.", "Чеснок - 2 зубчика"),
-            instructions = listOf(
-                "Отварите рис в подсоленной воде в течение 15 минут.",
-                "Нарежьте курицу полосками и обжарьте на сильном огне в течение 7 минут до румяности.",
-                "Влейте смесь соевого соуса, меда и чеснока, карамелизуйте курицу еще 4 минуты и подавайте с рисом."
-            )
-        ),
-        Recipe(
-            id = "loc_quesadilla", title = "Мексиканская Кесадилья с курицей, сыром и томатами",
-            description = "Хрустящие пшеничные лепешки тортильи с горячей начинкой из обжаренного куриного филе, сладкой кукурузы, томатов и расплавленного сыра.",
-            cuisine = "Мексиканская", category = "Вторые блюда", cookingTime = "20 мин", difficulty = "Легко", calories = 290,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/uvuyxu1503067369.jpg", "https://www.themealdb.com/images/media/meals/ypxvwv1505333929.jpg", "https://images.unsplash.com/photo-1618040996337-56904b7850b9?w=600"),
-            ingredients = listOf("Курица (филе) - 300 г", "Сыр твердый - 150 г", "Томаты - 2 шт.", "Лепешки тортильи или лаваш - 4 шт.", "Кукуруза консервированная - 100 г"),
-            instructions = listOf(
-                "Мелко нарежьте куриное филе и обжарьте на сковороде с кубиками томатов и кукурузой в течение 8 минут.",
-                "На половину каждой лепешки выложите слой тертого сыра, горячую куриную начинку и еще немного сыра, сложите пополам.",
-                "Обжарьте сложенные кесадильи на сухой сковороде по 3 минуты с каждой стороны до хрустящей корочки и расплавления сыра."
-            )
-        ),
-        Recipe(
-            id = "loc_tomyum", title = "Тайский суп Том Ям с креветками, грибами и кокосовым молоком",
-            description = "Знаменитый кисло-острый суп Таиланда на нежном кокосовом молоке с креветками, шампиньонами, томатами черри и свежим соком лайма.",
-            cuisine = "Тайская", category = "Супы", cookingTime = "25 мин", difficulty = "Средне", calories = 175,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/1529445434.jpg", "https://images.unsplash.com/photo-1548943487-a2e4e43b4853?w=600"),
-            ingredients = listOf("Креветки или курица - 300 г", "Грибы шампиньоны - 150 г", "Кокосовое молоко или сливки - 200 мл", "Томаты черри - 100 г", "Лимон или лайм - 1 шт."),
-            instructions = listOf(
-                "Доведите 500 мл бульона до кипения, добавьте нарезанные грибы и варите 7 минут.",
-                "Добавьте очищенные креветки, половинки томатов черри и влейте кокосовое молоко, варите еще 5 минут.",
-                "Приправьте соком лайма и подавайте горячим с отварным рисом."
-            )
-        ),
-        Recipe(
-            id = "loc_tikka", title = "Индийская Курица Тикка Масала в пряном томатно-сливочном соусе",
-            description = "Ароматное блюдо индийской кухни: мягкие кусочки куриного филе, тушенные в бархатистом соусе из сливок, томатов, чеснока и специй карри.",
-            cuisine = "Индийская", category = "Вторые блюда", cookingTime = "35 мин", difficulty = "Легко", calories = 260,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/wyxwsp1486979827.jpg", "https://www.themealdb.com/images/media/meals/qptpvt1487339892.jpg"),
-            ingredients = listOf("Курица (филе) - 500 г", "Сливки или сметана - 200 мл", "Томатный соус - 4 ст.л.", "Чеснок - 3 зубчика", "Карри и паприка - 2 ч.л."),
-            instructions = listOf(
-                "Нарежьте куриное филе кубиками и обжарьте со специями карри и чесноком в течение 8 минут.",
-                "Добавьте томатный соус и теплые сливки, перемешайте и тушите на слабом огне 15 минут до густоты.",
-                "Подавайте ароматную курицу с рассыпчатым рисом или теплыми лепешками."
-            )
-        ),
-        Recipe(
-            id = "loc_chinese_chicken", title = "Курица в кисло-сладком соусе с болгарским перцем по-китайски",
-            description = "Яркое блюдо китайской кухни на воке: сочные кусочки куриного филе, обжаренные с хрустящим сладким перцем в густом кисло-сладком соусе.",
-            cuisine = "Китайская", category = "Вторые блюда", cookingTime = "25 мин", difficulty = "Легко", calories = 255,
-            imageUrls = listOf("https://www.themealdb.com/images/media/meals/1525873040.jpg", "https://www.themealdb.com/images/media/meals/1529444830.jpg"),
-            ingredients = listOf("Курица (филе) - 500 г", "Перец болгарский - 2 шт.", "Соевый соус - 3 ст.л.", "Томатный соус - 2 ст.л.", "Крахмал - 2 ст.л.", "Мед или сахар - 1 ст.л."),
-            instructions = listOf(
-                "Нарежьте куриное филе кубиками, обваляйте в крахмале и быстро обжарьте на сильном огне 7 минут.",
-                "Добавьте крупно нарезанный болгарский перец и обжаривайте еще 4 минуты.",
-                "Влейте смесь соевого соуса, томатного соуса и меда, прогрейте 3 минуты до карамельной глазури."
-            )
-        )
+        Recipe("loc_borscht", "Классический борщ с говядиной и сметаной", "Традиционный густой суп насыщенного рубинового цвета на наваристом говяжьем бульоне со свеклой, свежей капустой и чесноком.", "Русская", "Супы", "1 ч 20 мин", "Средне", 135, listOf("https://www.themealdb.com/images/media/meals/vvstvq1487342592.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"), listOf("Говядина на кости - 500 г", "Свекла - 2 шт.", "Капуста белокочанная - 300 г", "Картофель - 4 шт.", "Томатная паста - 2 ст.л.", "Сметана - 3 ст.л."), listOf("Сварите наваристый бульон из говядины в течение 45 минут, затем достаньте мясо и нарежьте кусочками.", "В кипящий бульон отправьте нарезанный кубиками картофель и нашинкованную капусту, варите 15 минут.", "Обжарьте на сковороде тертую свеклу, морковь и лук с томатной пастой в течение 8 минут.", "Соедините зажарку с супом, добавьте чеснок и лавровый лист, томите под крышкой еще 10 минут.")),
+        Recipe("loc_chicken_rice", "Курица с рисом и овощами на одной сковороде", "Удобное и сытное домашнее блюдо в одной посуде: сочные кусочки курицы и рассыпчатый рис, пропитанные ароматом чеснока и моркови.", "Русская", "Вторые блюда", "40 мин", "Легко", 240, listOf("https://www.themealdb.com/images/media/meals/sypxpx1515365095.jpg", "https://images.unsplash.com/photo-1512058564366-18510be2db19?w=600"), listOf("Курица (филе или бедра) - 500 г", "Рис длиннозерный - 250 г", "Морковь - 1 шт.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Масло растительное - 2 ст.л."), listOf("Нарежьте курицу небольшими кусочками и обжарьте на сковороде до золотистой корочки в течение 8 минут.", "Добавьте нарезанный лук и тертую морковь, обжаривайте вместе еще 5 минут.", "Всыпьте промытый рис, разровняйте, влейте 500 мл горячей подсоленной воды и убавьте огонь до минимума.", "Накройте плотной крышкой и томите 20 минут, пока рис полностью не впитает бульон.")),
+        Recipe("loc_kartoshka", "Домашнее пирожное «Картошка» с соленой карамелью", "Знаменитый шоколадно-песочный десерт без выпечки с бархатистой текстурой какао и насыщенным вкусом карамельной сгущенки.", "Русская", "Что-то к чаю", "30 мин", "Легко", 380, listOf("https://www.themealdb.com/images/media/meals/tqtywx1468317395.jpg", "https://www.themealdb.com/images/media/meals/qxutws1486978099.jpg"), listOf("Печенье песочное - 400 г", "Вареная сгущенка (соленая карамель) - 250 г", "Сливочное масло - 100 г", "Какао-порошок - 4 ст.л."), listOf("Измельчите песочное печенье в мелкую крошку с помощью блендера или скалки.", "Смешайте крошку с 3 столовыми ложками какао, мягким сливочным маслом и карамельной сгущенкой.", "Сформируйте руками аккуратные овальные пирожные и обваляйте их в оставшемся какао.", "Уберите пирожные в холодильник на 20 минут для застывания перед подачей к чаю.")),
+        Recipe("loc_syrniki", "Пышные творожные сырники на завтрак", "Нежные домашние сырники с румяной золотистой корочкой и мягкой творожной серединкой, подаются со сметаной или ягодами.", "Русская", "Каши и завтраки", "25 мин", "Легко", 220, listOf("https://www.themealdb.com/images/media/meals/rwuyqx1511383174.jpg", "https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=600"), listOf("Творог 9% - 400 г", "Яйца - 1 шт.", "Мука пшеничная или рисовая - 3 ст.л.", "Сахар - 2 ст.л.", "Сметана - 3 ст.л."), listOf("Протрите творог вилкой, добавьте яйцо, сахар и щепотку ванилина, тщательно перемешайте.", "Всыпьте муку и замесите мягкую творожную массу, сформуйте ровные круглые шайбочки.", "Обжаривайте сырники на разогретой сковороде на среднем огне по 5 минут с каждой стороны до румяной корочки.")),
+        Recipe("loc_stroganoff", "Бефстроганов из говядины с грибами в сметанном соусе", "Классическое блюдо русской кухни: тонкие ломтики сочной говядины, томленные с шампиньонами и луком в густом сливочно-сметанном соусе.", "Русская", "Вторые блюда", "45 мин", "Средне", 265, listOf("https://www.themealdb.com/images/media/meals/svprys1511176755.jpg", "https://www.themealdb.com/images/media/meals/ursuup1487348423.jpg"), listOf("Говядина (вырезка) - 500 г", "Грибы шампиньоны - 250 г", "Сметана 20% - 200 г", "Лук репчатый - 2 шт.", "Мука - 1 ст.л."), listOf("Нарежьте говядину тонкими брусочками и быстро обжарьте на сильном огне в течение 6 минут.", "Отдельно обжарьте нарезанный лук и ломтики шампиньонов в течение 8 минут до золотистости.", "Соедините мясо с грибами, присыпьте столовой ложкой муки, добавьте сметану и 100 мл теплой воды.", "Тушите под крышкой на слабом огне 15 минут до загустения нежного соуса.")),
+        Recipe("loc_charlottka", "Пышная домашняя шарлотка с яблоками и корицей", "Воздушный бисквитный пирог с сочной кисло-сладкой яблочной начинкой и теплым пряным ароматом молотой корицы.", "Русская", "Выпечка", "45 мин", "Легко", 250, listOf("https://www.themealdb.com/images/media/meals/qtqvys1468573168.jpg", "https://www.themealdb.com/images/media/meals/xvsurr1511719182.jpg"), listOf("Яблоки кисло-сладкие - 4 шт.", "Яйца - 4 шт.", "Сахар - 150 г", "Мука - 160 г", "Корица молотая - 1 ч.л."), listOf("Взбейте яйца с сахаром миксером в пышную светлую пену в течение 5 минут.", "Аккуратно просейте муку и перемешайте лопаткой снизу вверх, чтобы тесто осталось воздушным.", "Выложите дольки яблок с корицей в смазанную форму, залейте тестом и выпекайте 35 минут при 180°C.")),
+        Recipe("loc_olivier", "Домашний салат Оливье с куриным филе", "Любимый праздничный и повседневный салат из нежного куриного филе, отварных овощей, маринованных огурчиков и зеленого горошка.", "Русская", "Салаты", "30 мин", "Легко", 195, listOf("https://www.themealdb.com/images/media/meals/1549542994.jpg", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"), listOf("Курица отварная - 300 г", "Картофель - 3 шт.", "Яйца - 3 шт.", "Морковь - 1 шт.", "Огурцы маринованные - 3 шт.", "Горошек зеленый - 150 г"), listOf("Отварите картофель, морковь и яйца в течение 20 минут, остудите и очистите.", "Нарежьте куриное филе, овощи и яйца одинаковыми мелкими кубиками.", "Добавьте зеленый горошек, заправьте сметаной или майонезом и охладите в холодильнике 10 минут.")),
+        Recipe("loc_kimchi_soup", "Острый корейский суп Кимчи Тиге со свининой и тофу", "Знаменитый согревающий суп корейской кухни с пикантной ферментированной капустой кимчи, нежным сыром тофу и мясом.", "Корейская", "Супы", "35 мин", "Легко", 190, listOf("https://www.themealdb.com/images/media/meals/1529446352.jpg", "https://images.unsplash.com/photo-1583224964978-2257b960c3d3?w=600"), listOf("Капуста кимчи - 300 г", "Свинина или курица - 250 г", "Сыр тофу - 150 г", "Яйца - 1 шт.", "Лук зеленый - 1 пучок"), listOf("Нарежьте мясо и капусту кимчи кусочками и обжарьте в глубокой кастрюле в течение 7 минут.", "Влейте 600 мл горячей воды или бульона, доведите до кипения и варите на среднем огне 15 минут.", "Добавьте нарезанный кубиками сыр тофу, вбейте яйцо и варите еще 4 минуты, посыпав зеленым луком.")),
+        Recipe("loc_korean_chicken", "Хрустящая курица по-корейски в кисло-сладком соусе Яннём", "Популярный корейский хит: кусочки курицы в тонкой хрустящей корочке, покрытые глянцевой медово-чесночной глазурью с кунжутом.", "Корейская", "Вторые блюда", "40 мин", "Средне", 310, listOf("https://www.themealdb.com/images/media/meals/1529444830.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"), listOf("Курица (филе или крылышки) - 600 г", "Крахмал кукурузный - 4 ст.л.", "Чеснок - 3 зубчика", "Томатный соус - 3 ст.л.", "Мед - 2 ст.л.", "Кунжут - 1 ст.л."), listOf("Нарежьте курицу кусочками, обваляйте в кукурузном крахмале и обжарьте в масле 12 минут до хрустящей корочки.", "В отдельной сковороде смешайте измельченный чеснок, томатный соус, соевый соус и мед, прогрейте 3 минуты.", "Переложите хрустящую курицу в горячий соус, быстро перемешайте и посыпьте семенами кунжута.")),
+        Recipe("loc_bibimbap", "Пибимпап (Корейский рис с говядиной, овощами и яйцом)", "Красочная корейская чаша на основе теплого риса, украшенная обжаренным пряным мясом, соломкой овощей и яичницей с жидким желтком.", "Корейская", "Вторые блюда", "30 мин", "Легко", 275, listOf("https://www.themealdb.com/images/media/meals/z0ageb1583189517.jpg", "https://images.unsplash.com/photo-1553163147-622ab57be1c7?w=600"), listOf("Рис круглозерный - 250 г", "Фарш говяжий - 250 г", "Яйца - 2 шт.", "Морковь - 1 шт.", "Огурец - 1 шт.", "Соевый соус - 2 ст.л."), listOf("Отварите рис в подсоленной воде в течение 15 минут до рассыпчатости.", "Обжарьте говяжий фарш с соевым соусом и чесноком в течение 8 минут, отдельно поджарьте соломку моркови 4 минуты.", "Поджарьте яичницу-глазунью в течение 3 минут, выложите на горячий рис вместе с мясом и овощами.")),
+        Recipe("loc_bulgogi", "Пулькоги (Мраморная говядина по-корейски в кунжутном маринаде)", "Тончайшие ломтики говядины, маринованные в соевом соусе с чесноком и медом, быстро обжаренные на сильном огне с луком.", "Корейская", "Вторые блюда", "25 мин", "Легко", 260, listOf("https://www.themealdb.com/images/media/meals/1529443236.jpg", "https://www.themealdb.com/images/media/meals/1529444113.jpg"), listOf("Говядина - 500 г", "Соевый соус - 4 ст.л.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Сахар или мед - 1 ст.л.", "Кунжут - 1 ст.л."), listOf("Тонко нарежьте говядину и замаринуйте в соевом соусе с измельченным чесноком и медом на 10 минут.", "Разогрейте сковороду на сильном огне, выложите мясо с полукольцами лука и обжаривайте 8 минут, помешивая.", "Посыпьте готовое мясо обжаренным кунжутом и зеленым луком, подавайте с рисом.")),
+        Recipe("loc_korean_carrots", "Пикантный корейский салат из моркови с чесноком и кориандром", "Хрустящая сочная морковь, нашинкованная тонкой соломкой и заправленная горячим пряным маслом с чесноком и молотым кориандром.", "Корейская", "Салаты", "20 мин", "Легко", 145, listOf("https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"), listOf("Морковь сочная - 500 г", "Чеснок - 4 зубчика", "Масло растительное - 4 ст.л.", "Уксус яблочный - 2 ст.л.", "Кориандр молотый - 1 ч.л.", "Сахар - 1 ч.л."), listOf("Натрите морковь длинной тонкой соломкой, посыпьте солью и сахаром, слегка помните руками в течение 3 минут.", "Выложите сверху горкой измельченный чеснок и молотый кориандр.", "Раскалите растительное масло на сковороде в течение 4 минут, вылейте прямо на чеснок со специями, добавьте уксус и перемешайте.")),
+        Recipe("loc_gyeran_mari", "Керан Мари (Пышный корейский яичный рулет с сыром и овощами)", "Традиционный корейский завтрак: многослойный нежный омлет-рулет с тягучим сыром внутри, нарезанный порционными кусочками.", "Корейская", "Каши и завтраки", "15 мин", "Легко", 210, listOf("https://www.themealdb.com/images/media/meals/1550440197.jpg", "https://images.unsplash.com/photo-1525351484163-7529414344d8?w=600"), listOf("Яйца - 4 шт.", "Молоко - 2 ст.л.", "Сыр твердый - 60 г", "Морковь - 0.5 шт.", "Лук зеленый - 2 пера"), listOf("Взбейте яйца с молоком и солью, вмешайте очень мелко нарезанную морковь и зеленый лук.", "Вылейте треть смеси тонким слоем на разогретую сковороду, жарьте 2 минуты, посыпьте сыром и сверните в рулет на край сковороды.", "Долейте оставшуюся яичную смесь в 2 приема, каждый раз оборачивая рулет новыми слоями в течение 5 минут, затем нарежьте ломтиками.")),
+        Recipe("loc_french_gratin", "Французский картофельный гратен Дофинуа со сливками и сыром", "Изысканная французская запеканка из тончайших ломтиков картофеля, томленных в чесночных сливках под румяной сырной корочкой.", "Французская", "Вторые блюда", "50 мин", "Легко", 265, listOf("https://www.themealdb.com/images/media/meals/qwrtut1468418027.jpg", "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=600"), listOf("Картофель - 800 г", "Сыр твердый - 150 г", "Молоко или сливки - 300 мл", "Чеснок - 2 зубчика", "Сливочное масло - 30 г"), listOf("Очистите картофель и нарежьте тонкими кружочками толщиной около 3 миллиметров.", "Натрите форму для запекания зубчиком чеснока и сливочным маслом, уложите картофель внахлест.", "Залейте горячими сливками с солью, посыпьте тертым сыром и запекайте 40 минут при 190°C до золотистой корочки.")),
+        Recipe("loc_french_soup", "Французский луковый суп с сырными гренками", "Классика парижских бистро: густой бульон из карамелизированного в сливочном масле лука, запеченный под шапкой из багета и тягучего сыра.", "Французская", "Супы", "45 мин", "Средне", 210, listOf("https://www.themealdb.com/images/media/meals/xvrrux1511783685.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"), listOf("Лук репчатый - 500 г", "Сыр твердый - 120 г", "Сливочное масло - 50 г", "Багет или белый хлеб - 4 ломтика", "Мясной бульон - 700 мл"), listOf("Нарежьте лук тонкими полукольцами и томите на сливочном масле на медленном огне 20 минут до карамельного оттенка.", "Влейте горячий бульон, посолите и варите на слабом огне еще 15 минут.", "Разлейте суп по формам, сверху положите подсушенный багет, щедро посыпьте сыром и запекайте 5 минут в духовке.")),
+        Recipe("loc_croissants", "Французские круассаны с запеченным миндальным кремом", "Хрустящая слоеная выпечка с нежной орехово-сливочной начинкой франжипан и сахарной пудрой — идеальное дополнение к утреннему чаю или кофе.", "Французская", "Что-то к чаю", "30 мин", "Легко", 390, listOf("https://www.themealdb.com/images/media/meals/tlstrw1511724769.jpg", "https://www.themealdb.com/images/media/meals/wtqrqw1511639627.jpg"), listOf("Готовые круассаны - 4 шт.", "Миндальная мука или орехи - 100 г", "Сливочное масло - 80 г", "Яйца - 2 шт.", "Сахарная пудра - 80 г"), listOf("Взбейте размягченное сливочное масло с сахарной пудрой, яйцами и молотым миндалем в пышный крем.", "Разрежьте круассаны вдоль пополам, щедро смажьте миндальным кремом внутри и сверху.", "Запекайте в разогретой до 180°C духовке в течение 15 минут до хрустящей румяной корочки.")),
+        Recipe("loc_julienne", "Французский жульен с курицей и грибами под сырной корочкой", "Горячая сливочно-грибная закуска с нежным куриным филе и тягучей золотистой корочкой запеченного сыра.", "Французская", "Вторые блюда", "30 мин", "Легко", 280, listOf("https://www.themealdb.com/images/media/meals/uuuspp1511297945.jpg", "https://www.themealdb.com/images/media/meals/1548772327.jpg"), listOf("Курица (филе) - 300 г", "Грибы шампиньоны - 300 г", "Сыр твердый - 150 г", "Сливки или сметана - 200 г", "Лук репчатый - 1 шт."), listOf("Мелко нарежьте куриное филе, грибы и лук, обжарьте на сковороде в течение 10 минут.", "Влейте сливки или сметану, посолите и прогрейте смесь еще 4 минуты до легкого загустения.", "Разложите по формам, обильно посыпьте тертым сыром и запекайте в духовке 12 минут при 190°C.")),
+        Recipe("loc_carbonara", "Итальянская паста Карбонара с беконом и Пармезаном", "Знаменитая римская паста с хрустящими ломтиками бекона и шелковистым соусом на основе яичных желтков и тертого сыра Пармезан.", "Итальянская", "Паста и пицца", "20 мин", "Легко", 340, listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg", "https://images.unsplash.com/photo-1612874742237-6526221588e3?w=600"), listOf("Спагетти - 300 г", "Бекон или грудинка - 150 г", "Яйца (желтки) - 3 шт.", "Сыр Пармезан - 80 г", "Чеснок - 2 зубчика"), listOf("Отварите спагетти в кипящей подсоленной воде в течение 9 минут до состояния аль денте.", "Нарежьте бекон ломтиками и обжарьте на сковороде с раздавленным зубчиком чеснока в течение 5 минут.", "В миске взбейте яичные желтки с мелко натертым сыром и черным перцем, добавьте 3 ложки воды от пасты.", "Переложите горячие спагетти к бекону, снимите с огня, влейте яично-сырный соус и энергично перемешайте.")),
+        Recipe("loc_pizza", "Домашняя итальянская пицца Маргарита с томатами и Моцареллой", "Классическая неаполитанская пицца на тонком тесте с ароматным томатным соусом, тягучей Моцареллой и свежим базиликом.", "Итальянская", "Паста и пицца", "30 мин", "Легко", 285, listOf("https://www.themealdb.com/images/media/meals/x0lk931587671540.jpg", "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=600"), listOf("Тесто для пиццы - 400 г", "Сыр Моцарелла - 250 г", "Томаты спелые - 3 шт.", "Томатный соус - 4 ст.л.", "Масло оливковое и базилик"), listOf("Раскатайте тесто в тонкую круглую лепешку и переложите на противень, застеленный пергаментом.", "Смажьте основу томатным соусом с орегано, разложите кружочки томатов и ломтики сыра Моцарелла.", "Выпекайте в максимально разогретой до 220°C духовке в течение 15 минут до расплавления сыра.")),
+        Recipe("loc_caesar", "Салат Цезарь с обжаренной куриной грудкой, сыром и сухариками", "Легкий и хрустящий салат из свежих листьев с румяными ломтиками куриного филе, чесночными гренками, черри и тертым сыром.", "Итальянская", "Салаты", "25 мин", "Легко", 215, listOf("https://www.themealdb.com/images/media/meals/urtwux1486983078.jpg", "https://images.unsplash.com/photo-1550304943-4f24f54ddde9?w=600"), listOf("Курица (филе) - 300 г", "Салат листовой или пекинская капуста - 1 пучок", "Томаты черри - 150 г", "Сыр твердый - 60 г", "Хлеб белый - 3 ломтика"), listOf("Нарежьте белый хлеб кубиками и подсушите на сковороде с каплей масла и чесноком в течение 5 минут.", "Обжарьте куриное филе со специями по 6 минут с каждой стороны, затем нарежьте ломтиками.", "Порвите листья салата в глубокую тарелку, выложите курицу, половинки томатов, сухарики и посыпьте тертым сыром.")),
+        Recipe("loc_khachapuri", "Грузинский хачапури по-аджарски с сыром и желтком", "Знаменитая грузинская открытая лепешка-лодочка с расплавленным тягучим сыром Сулугуни, сливочным маслом и жидким яичным желтком.", "Грузинская", "Выпечка", "45 мин", "Средне", 330, listOf("https://www.themealdb.com/images/media/meals/sywswr1511383814.jpg", "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600"), listOf("Тесто дрожжевое - 400 г", "Сыр Сулугуни или Моцарелла - 350 г", "Яйца - 2 шт.", "Сливочное масло - 30 г"), listOf("Раскатайте тесто в овал, сверните края трубочками к центру и защипните концы, формируя лодочку.", "Натрите сыр на крупной терке, смешайте с двумя ложками воды и щедро наполните лодочку.", "Выпекайте в разогретой до 200°C духовке в течение 20 минут до румяных бортиков.", "Выньте хачапури, сделайте углубление в сыре, влейте желток и верните в духовку еще на 2 минуты.")),
+        Recipe("loc_chkmeruli", "Чкмерули (Курица по-грузински в сливочно-чесночном соусе)", "Румяная зажаренная курица, томленная в густом соусе из сливок, чеснока, кинзы и грузинских пряностей хмели-сунели.", "Грузинская", "Вторые блюда", "40 мин", "Легко", 290, listOf("https://www.themealdb.com/images/media/meals/qtuwxu1468233098.jpg", "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?w=600"), listOf("Курица - 700 г", "Сливки или молоко - 250 мл", "Чеснок - 5 зубчиков", "Кинза и петрушка - 1 пучок", "Хмели-сунели - 1 ч.л."), listOf("Натрите кусочки курицы солью и обжарьте на сковороде под гнетом по 8 минут с каждой стороны до золотистой корочки.", "Измельчите чеснок и зелень, смешайте с теплыми сливками и пряностью хмели-сунели.", "Залейте курицу сливочно-чесночным соусом и томите на слабом огне 12 минут.")),
+        Recipe("loc_ramen", "Японский домашний Рамен с курицей, лапшой и яйцом", "Насыщенный японский суп с пшеничной лапшой, пряным соево-чесночным бульоном, ломтиками курицы, грибами и яйцом всмятку.", "Японская", "Супы", "35 мин", "Легко", 230, listOf("https://www.themealdb.com/images/media/meals/swttys1511385853.jpg", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600"), listOf("Курица (филе) - 350 г", "Лапша пшеничная или рамен - 200 г", "Яйца - 2 шт.", "Грибы шампиньоны - 150 г", "Соевый соус - 3 ст.л."), listOf("Сварите куриное филе в 1 литре воды с добавлением соевого соуса, чеснока и ломтиков грибов в течение 20 минут.", "Отдельно отварите яйца всмятку ровно 6 минут после закипания, остудите в холодной воде и очистите.", "Отварите лапшу в течение 4 минут, разложите по глубоким мискам, залейте горячим бульоном и украсьте ломтиками курицы и половинками яйца.")),
+        Recipe("loc_teriyaki", "Курица Терияки с кунжутом и рассыпчатым рисом", "Быстрое японское блюдо: сочные кусочки курицы, карамелизированные в густом сладко-соленом соусе терияки с рассыпчатым рисом.", "Японская", "Вторые блюда", "25 мин", "Легко", 245, listOf("https://www.themealdb.com/images/media/meals/wvpsxx1468256321.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"), listOf("Курица (филе или бедра) - 500 г", "Рис - 200 г", "Соевый соус - 4 ст.л.", "Мед или сахар - 2 ст.л.", "Чеснок - 2 зубчика"), listOf("Отварите рис в подсоленной воде в течение 15 минут.", "Нарежьте курицу полосками и обжарьте на сильном огне в течение 7 минут до румяности.", "Влейте смесь соевого соуса, меда и чеснока, карамелизуйте курицу еще 4 минуты и подавайте с рисом.")),
+        Recipe("loc_quesadilla", "Мексиканская Кесадилья с курицей, сыром и томатами", "Хрустящие пшеничные лепешки тортильи с горячей начинкой из обжаренного куриного филе, сладкой кукурузы, томатов и расплавленного сыра.", "Мексиканская", "Вторые блюда", "20 мин", "Легко", 290, listOf("https://www.themealdb.com/images/media/meals/uvuyxu1503067369.jpg", "https://www.themealdb.com/images/media/meals/ypxvwv1505333929.jpg"), listOf("Курица (филе) - 300 г", "Сыр твердый - 150 г", "Томаты - 2 шт.", "Лепешки тортильи или лаваш - 4 шт.", "Кукуруза консервированная - 100 г"), listOf("Мелко нарежьте куриное филе и обжарьте на сковороде с кубиками томатов и кукурузой в течение 8 минут.", "На половину каждой лепешки выложите слой тертого сыра, горячую куриную начинку и еще немного сыра, сложите пополам.", "Обжарьте сложенные кесадильи на сухой сковороде по 3 минуты с каждой стороны до хрустящей корочки и расплавления сыра.")),
+        Recipe("loc_tomyum", "Тайский суп Том Ям с креветками, грибами и кокосовым молоком", "Знаменитый кисло-острый суп Таиланда на нежном кокосовом молоке с креветками, шампиньонами, томатами черри и свежим соком лайма.", "Тайская", "Супы", "25 мин", "Средне", 175, listOf("https://www.themealdb.com/images/media/meals/1529445434.jpg", "https://images.unsplash.com/photo-1548943487-a2e4e43b4853?w=600"), listOf("Креветки или курица - 300 г", "Грибы шампиньоны - 150 г", "Кокосовое молоко или сливки - 200 мл", "Томаты черри - 100 г", "Лимон или лайм - 1 шт."), listOf("Доведите 500 мл бульона до кипения, добавьте нарезанные грибы и варите 7 минут.", "Добавьте очищенные креветки, половинки томатов черри и влейте кокосовое молоко, варите еще 5 минут.", "Приправьте соком лайма и подавайте горячим с отварным рисом.")),
+        Recipe("loc_tikka", "Индийская Курица Тикка Масала в пряном томатно-сливочном соусе", "Ароматное блюдо индийской кухни: мягкие кусочки куриного филе, тушенные в бархатистом соусе из сливок, томатов, чеснока и специй карри.", "Индийская", "Вторые блюда", "35 мин", "Легко", 260, listOf("https://www.themealdb.com/images/media/meals/wyxwsp1486979827.jpg", "https://www.themealdb.com/images/media/meals/qptpvt1487339892.jpg"), listOf("Курица (филе) - 500 г", "Сливки или сметана - 200 мл", "Томатный соус - 4 ст.л.", "Чеснок - 3 зубчика", "Карри и паприка - 2 ч.л."), listOf("Нарежьте куриное филе кубиками и обжарьте со специями карри и чесноком в течение 8 минут.", "Добавьте томатный соус и теплые сливки, перемешайте и тушите на слабом огне 15 минут до густоты.", "Подавайте ароматную курицу с рассыпчатым рисом или теплыми лепешками.")),
+        Recipe("loc_chinese_chicken", "Курица в кисло-сладком соусе с болгарским перцем по-китайски", "Яркое блюдо китайской кухни на воке: сочные кусочки куриного филе, обжаренные с хрустящим сладким перцем в густом кисло-сладком соусе.", "Китайская", "Вторые блюда", "25 мин", "Легко", 255, listOf("https://www.themealdb.com/images/media/meals/1525873040.jpg", "https://www.themealdb.com/images/media/meals/1529444830.jpg"), listOf("Курица (филе) - 500 г", "Перец болгарский - 2 шт.", "Соевый соус - 3 ст.л.", "Томатный соус - 2 ст.л.", "Крахмал - 2 ст.л.", "Мед или сахар - 1 ст.л."), listOf("Нарежьте куриное филе кубиками, обваляйте в крахмале и быстро обжарьте на сильном огне 7 минут.", "Добавьте крупно нарезанный болгарский перец и обжаривайте еще 4 минуты.", "Влейте смесь соевого соуса, томатного соуса и меда, прогрейте 3 минуты до карамельной глазури."))
     )
 }
