@@ -99,7 +99,7 @@ import kotlin.random.Random
 private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
 private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
 private const val CURRENT_APP_VERSION = "v1.2 ⚡"
-private const val WHATS_NEW_TEXT = "• Обновление v1.2 установлено прямо из приложения!\n• Добавлен блок «💡 Секрет Шефа» в карточки рецептов\n• Кнопка «🎲 Случайное блюдо» и защита экрана от затухания"
+private const val WHATS_NEW_TEXT = "• Исправлен запуск приложения (Lazy-инициализация)\n• Добавлен блок «💡 Секрет Шефа» в карточки рецептов\n• Кнопка «🎲 Случайное блюдо» и защита экрана от затухания"
 
 private val LightCulinaryColorScheme = lightColorScheme(
     primary = Color(0xFFD84315), onPrimary = Color.White,
@@ -138,14 +138,17 @@ data class Recipe(
     val instructions: List<String>,
     val isCustom: Boolean = false
 ) {
-    val cookingMinutes: Int = CulinaryUtils.parseCookingMinutesOnce(cookingTime)
-    val chefTip: String = CulinaryUtils.buildChefTip(category, cuisine)
-    val searchIndexText: String = buildString {
-        append(title.lowercase()).append(' ')
-        append(description.lowercase()).append(' ')
-        append(cuisine.lowercase()).append(' ')
-        append(category.lowercase()).append(' ')
-        ingredients.forEach { append(it.lowercase()).append(' ') }
+    // Вычисляются лениво (by lazy) только при реальном обращении, исключая краш при старте!
+    val cookingMinutes: Int by lazy { CulinaryUtils.parseCookingMinutesOnce(cookingTime) }
+    val chefTip: String by lazy { CulinaryUtils.buildChefTip(category, cuisine) }
+    val searchIndexText: String by lazy {
+        buildString {
+            append(title.lowercase()).append(' ')
+            append(description.lowercase()).append(' ')
+            append(cuisine.lowercase()).append(' ')
+            append(category.lowercase()).append(' ')
+            ingredients.forEach { append(it.lowercase()).append(' ') }
+        }
     }
 
     fun toJson(): JSONObject = JSONObject().apply {
@@ -419,7 +422,7 @@ object AppUpdateManager {
 }
 
 // =========================================================================
-// КУЛИНАРНЫЕ УТИЛИТЫ И СЛОВАРЬ
+// КУЛИНАРНЫЕ УТИЛИТЫ И СЛОВАРЬ (ВСЕ ПОЛЯ ОБЪЯВЛЕНЫ СТРОГО ДО ФУНКЦИЙ)
 // =========================================================================
 object CulinaryUtils {
     val CUISINES = listOf("Все", "Русская", "Корейская", "Французская", "Итальянская", "Японская", "Грузинская", "Мексиканская", "Китайская", "Тайская", "Индийская")
@@ -437,6 +440,122 @@ object CulinaryUtils {
     private val LATIN_REGEX = Regex("[a-zA-Z]{2,}")
     private val NON_WORD_REGEX = Regex("[^а-яёa-z\\s-]")
     private val WHITESPACE_REGEX = Regex("\\s+")
+
+    private val AREA_TO_RUSSIAN_CUISINE = mapOf(
+        "russian" to "Русская", "korean" to "Корейская", "french" to "Французская", "italian" to "Итальянская",
+        "japanese" to "Японская", "georgian" to "Грузинская", "mexican" to "Мексиканская", "chinese" to "Китайская",
+        "thai" to "Тайская", "indian" to "Индийская", "greek" to "Греческая", "spanish" to "Испанская",
+        "turkish" to "Турецкая", "vietnamese" to "Вьетнамская", "moroccan" to "Марокканская", "american" to "Американская",
+        "british" to "Британская", "polish" to "Польская", "ukrainian" to "Украинская", "croatian" to "Хорватская",
+        "irish" to "Ирландская", "jamaican" to "Ямайская", "egyptian" to "Египетская", "dutch" to "Голландская",
+        "portuguese" to "Португальская", "canadian" to "Канадская", "malaysian" to "Малайзийская", "tunisian" to "Тунисская",
+        "filipino" to "Филиппинская", "kenyan" to "Кенийская", "norwegian" to "Норвежская", "australian" to "Австралийская"
+    )
+
+    private val CUISINE_FLAGS = mapOf(
+        "Русская" to "🇷🇺", "Корейская" to "🇰🇷", "Французская" to "🇫🇷", "Итальянская" to "🇮🇹",
+        "Японская" to "🇯🇵", "Грузинская" to "🇬🇪", "Мексиканская" to "🇲🇽", "Китайская" to "🇨🇳",
+        "Тайская" to "🇹🇭", "Индийская" to "🇮🇳", "Греческая" to "🇬🇷", "Испанская" to "🇪🇸",
+        "Турецкая" to "🇹🇷", "Вьетнамская" to "🇻🇳", "Марокканская" to "🇲🇦", "Американская" to "🇺🇸",
+        "Британская" to "🇬🇧", "Польская" to "🇵🇱", "Украинская" to "🇺🇦", "Хорватская" to "🇭🇷",
+        "Ирландская" to "🇮🇪", "Ямайская" to "🇯🇲", "Египетская" to "🇪🇬", "Голландская" to "🇳🇱",
+        "Португальская" to "🇵🇹", "Канадская" to "🇨🇦", "Малайзийская" to "🇲🇾", "Тунисская" to "🇹🇳",
+        "Филиппинская" to "🇵🇭", "Домашняя" to "🏠"
+    )
+
+    private val SPEECH_REPLACEMENTS = listOf(
+        Regex("(\\d+)\\s*-\\s*(\\d+)") to "$1 или $2",
+        Regex("(?i)\\bст\\.?\\s*л\\.?") to "столовых ложек",
+        Regex("(?i)\\bч\\.?\\s*л\\.?") to "чайных ложек",
+        Regex("(?i)(\\d+)\\s*г\\b\\.?") to "$1 граммов",
+        Regex("(?i)(\\d+)\\s*гр\\b\\.?") to "$1 граммов",
+        Regex("(?i)(\\d+)\\s*кг\\b\\.?") to "$1 килограммов",
+        Regex("(?i)(\\d+)\\s*мл\\b\\.?") to "$1 миллилитров",
+        Regex("(?i)(\\d+)\\s*л\\b\\.?") to "$1 литров",
+        Regex("(?i)(\\d+)\\s*шт\\.?") to "$1 штуки",
+        Regex("(?i)(\\d+)\\s*мин\\.?") to "$1 минут",
+        Regex("(?i)(\\d+)\\s*ч\\b\\.?") to "$1 час"
+    )
+
+    private val UNIT_PRE_REPLACEMENTS = listOf(
+        Regex("(?i)\\b(\\d+)\\s+1/2\\b") to "$1.5", Regex("(?i)\\b(\\d+)\\s+1/4\\b") to "$1.25",
+        Regex("(?i)\\b(\\d+)\\s+3/4\\b") to "$1.75", Regex("(?i)\\b(\\d+)\\s+1/3\\b") to "$1.3",
+        Regex("(?i)\\b(\\d+)\\s+2/3\\b") to "$1.7", Regex("(?i)\\b1/2\\b") to "0.5",
+        Regex("(?i)\\b1/4\\b") to "0.25", Regex("(?i)\\b3/4\\b") to "0.75",
+        Regex("(?i)\\b1/3\\b") to "0.3", Regex("(?i)\\b2/3\\b") to "0.7",
+        Regex("(?i)(\\d+)\\s*g\\b") to "$1 г", Regex("(?i)(\\d+)\\s*kg\\b") to "$1 кг",
+        Regex("(?i)(\\d+)\\s*ml\\b") to "$1 мл", Regex("(?i)(\\d+)\\s*oz\\b") to "$1 унц.",
+        Regex("(?i)(\\d+)\\s*lb(?:s)?\\b") to "$1 фунт.", Regex("(?i)\\btbsp(?:s)?\\b") to "ст.л.",
+        Regex("(?i)\\btblsp(?:s)?\\b") to "ст.л.", Regex("(?i)\\btablespoon(?:s)?\\b") to "ст.л.",
+        Regex("(?i)\\btsp(?:s)?\\b") to "ч.л.", Regex("(?i)\\bteaspoon(?:s)?\\b") to "ч.л."
+    )
+
+    private val CULINARY_DICTIONARY: List<Pair<Regex, String>> by lazy {
+        listOf(
+            "graham cracker crumbs" to "крошка песочного печенья", "graham crackers" to "песочное печенье", "graham cracker" to "песочное печенье",
+            "digestive biscuits" to "песочное печенье", "evaporated milk" to "концентрированное молоко", "condensed milk" to "сгущенное молоко",
+            "extra virgin olive oil" to "оливковое масло", "sunflower oil" to "подсолнечное масло", "vegetable oil" to "растительное масло",
+            "sesame seed oil" to "кунжутное масло", "sesame oil" to "кунжутное масло", "coconut oil" to "кокосовое масло", "olive oil" to "оливковое масло",
+            "unsalted butter" to "сливочное масло", "salted butter" to "сливочное масло", "melted butter" to "растопленное масло",
+            "chicken breast" to "куриная грудка", "chicken breasts" to "куриные грудки", "chicken thighs" to "куриные бедра", "chicken wings" to "куриные крылышки",
+            "chicken stock" to "куриный бульон", "chicken broth" to "куриный бульон", "beef stock" to "говяжий бульон", "vegetable stock" to "овощной бульон",
+            "minced beef" to "говяжий фарш", "ground beef" to "говяжий фарш", "minced pork" to "свиной фарш", "ground pork" to "свиной фарш",
+            "heavy cream" to "жирные сливки", "double cream" to "сливки", "single cream" to "сливки", "sour cream" to "сметана", "cream cheese" to "сливочный сыр",
+            "cheddar cheese" to "сыр Чеддер", "parmesan cheese" to "сыр Пармезан", "mozzarella cheese" to "сыр Моцарелла", "feta cheese" to "сыр Фета",
+            "spring onions" to "зеленый лук", "spring onion" to "зеленый лук", "green onions" to "зеленый лук", "red onion" to "красный лук",
+            "garlic cloves" to "зубчики чеснока", "garlic clove" to "зубчик чеснока", "cloves garlic" to "зубчика чеснока", "garlic powder" to "сушеный чеснок",
+            "cherry tomatoes" to "томаты черри", "chopped tomatoes" to "рубленые томаты", "tomato puree" to "томатное пюре", "tomato paste" to "томатная паста",
+            "tomato sauce" to "томатный соус", "soy sauce" to "соевый соус", "fish sauce" to "рыбный соус", "oyster sauce" to "устричный соус",
+            "worcestershire sauce" to "вустерский соус", "hot sauce" to "острый соус", "white wine vinegar" to "белый винный уксус", "apple cider vinegar" to "яблочный уксус",
+            "balsamic vinegar" to "бальзамический уксус", "rice vinegar" to "рисовый уксус", "lemon juice" to "лимонный сок", "lime juice" to "сок лайма",
+            "all-purpose flour" to "пшеничная мука", "plain flour" to "пшеничная мука", "self-raising flour" to "мука с разрыхлителем", "cornstarch" to "кукурузный крахмал",
+            "corn flour" to "кукурузный крахмал", "baking powder" to "разрыхлитель", "baking soda" to "сода", "bicarbonate of soda" to "сода",
+            "caster sugar" to "мелкий сахар", "brown sugar" to "коричневый сахар", "icing sugar" to "сахарная пудра", "powdered sugar" to "сахарная пудра",
+            "vanilla extract" to "ванильный экстракт", "black pepper" to "черный перец", "cayenne pepper" to "кайенский перец", "chili powder" to "порошок чили",
+            "bell pepper" to "болгарский перец", "sweet potatoes" to "батат", "bay leaf" to "лавровый лист", "bay leaves" to "лавровый лист",
+            "egg yolks" to "яичные желтки", "egg yolk" to "желток", "egg whites" to "яичные белки", "coconut milk" to "кокосовое молоко",
+            "bread crumbs" to "панировочные сухари", "breadcrumbs" to "панировочные сухари", "sesame seeds" to "кунжут", "peanut butter" to "арахисовая паста",
+            "to taste" to "по вкусу", "for garnish" to "для украшения", "to serve" to "для подачи", "finely chopped" to "мелко нарезанный", "thinly sliced" to "тонко нарезанный",
+            "preheat the oven" to "разогрейте духовку", "medium heat" to "средний огонь", "golden brown" to "золотистая корочка", "frying pan" to "сковорода",
+            "chicken" to "курица", "beef" to "говядина", "pork" to "свинина", "lamb" to "баранина", "turkey" to "индейка", "duck" to "утка", "bacon" to "бекон",
+            "sausage" to "колбаски", "ham" to "ветчина", "meat" to "мясо", "mince" to "фарш", "salmon" to "лосось", "tuna" to "тунец", "cod" to "треска", "fish" to "рыба",
+            "shrimp" to "креветки", "prawns" to "креветки", "prawn" to "креветка", "seafood" to "морепродукты", "potatoes" to "картофель", "potato" to "картофель",
+            "carrots" to "морковь", "carrot" to "морковь", "onions" to "лук", "onion" to "лук", "shallots" to "лук-шалот", "leek" to "лук-порей",
+            "garlic" to "чеснок", "ginger" to "имбирь", "tomatoes" to "томаты", "tomato" to "томат", "cucumber" to "огурец", "cabbage" to "капуста",
+            "broccoli" to "брокколи", "cauliflower" to "цветная капуста", "spinach" to "шпинат", "lettuce" to "салат", "celery" to "сельдерей",
+            "zucchini" to "кабачок", "courgette" to "кабачок", "eggplant" to "баклажан", "aubergine" to "баклажан", "pumpkin" to "тыква",
+            "mushrooms" to "грибы", "mushroom" to "грибы", "peas" to "горошек", "beans" to "фасоль", "lentils" to "чечевица", "chickpeas" to "нут", "corn" to "кукуруза",
+            "avocado" to "авокадо", "olives" to "оливки", "beetroot" to "свекла", "peppers" to "перец", "parsley" to "петрушка", "cilantro" to "кинза",
+            "coriander" to "кориандр", "dill" to "укроп", "basil" to "базилик", "mint" to "мята", "rosemary" to "розмарин", "thyme" to "тимьян", "oregano" to "орегано",
+            "paprika" to "паприка", "cumin" to "зира", "turmeric" to "куркума", "cinnamon" to "корица", "nutmeg" to "мускатный орех", "cloves" to "зубчика",
+            "clove" to "зубчик", "cardamom" to "кардамон", "vanilla" to "ваниль", "curry" to "карри", "chili" to "чили", "chilli" to "чили", "mustard" to "горчица",
+            "mayonnaise" to "майонез", "ketchup" to "кетчуп", "vinegar" to "уксус", "sauce" to "соус", "paste" to "паста", "stock" to "бульон", "broth" to "бульон",
+            "water" to "вода", "milk" to "молоко", "cream" to "сливки", "butter" to "сливочное масло", "yogurt" to "йогурт", "cheese" to "сыр", "parmesan" to "Пармезан",
+            "mozzarella" to "Моцарелла", "cheddar" to "Чеддер", "ricotta" to "Рикотта", "mascarpone" to "Маскарпоне", "tofu" to "сыр тофу", "eggs" to "яйца", "egg" to "яйцо",
+            "yolk" to "желток", "yolks" to "желтки", "flour" to "мука", "sugar" to "сахар", "salt" to "соль", "pepper" to "перец", "honey" to "мёд", "syrup" to "сироп",
+            "chocolate" to "шоколад", "cocoa" to "какао", "yeast" to "дрожжи", "starch" to "крахмал", "rice" to "рис", "pasta" to "паста", "spaghetti" to "спагетти",
+            "noodles" to "лапша", "noodle" to "лапша", "lasagne" to "лазанья", "oats" to "овсянка", "bread" to "хлеб", "baguette" to "багет", "tortillas" to "тортильи",
+            "dough" to "тесто", "pastry" to "тесто", "crumbs" to "крошка", "apple" to "яблоко", "apples" to "яблоки", "banana" to "банан", "lemon" to "лимон",
+            "lime" to "лайм", "orange" to "апельсин", "strawberries" to "клубника", "berries" to "ягоды", "raisins" to "изюм", "walnuts" to "грецкие орехи",
+            "almonds" to "миндаль", "peanuts" to "арахис", "cashews" to "кешью", "nuts" to "орехи", "coconut" to "кокос", "oil" to "масло",
+            "cups" to "стакана", "cup" to "стакан", "tbsp" to "ст.л.", "tbs" to "ст.л.", "tsp" to "ч.л.", "oz" to "унц.", "lb" to "фунт.", "grams" to "г", "gram" to "г",
+            "pinch" to "щепотка", "dash" to "щепотка", "handful" to "горсть", "bunch" to "пучок", "slice" to "ломтик", "slices" to "ломтика", "piece" to "кусочек",
+            "pieces" to "кусочка", "can" to "банка", "tin" to "банка", "packet" to "уп.", "pkg" to "уп.", "fillet" to "филе", "breast" to "грудка", "thighs" to "бедра",
+            "large" to "крупный", "medium" to "средний", "small" to "мелкий", "fresh" to "свежий", "dried" to "сушеный", "frozen" to "замороженный", "smoked" to "копченый",
+            "sweet" to "сладкий", "hot" to "острый", "spicy" to "пряный", "warm" to "теплый", "cold" to "холодный", "boiling" to "кипящий", "melted" to "растопленный",
+            "chopped" to "нарезанный", "diced" to "кубиками", "sliced" to "ломтиками", "minced" to "измельченный", "grated" to "тертый", "crushed" to "раздавленный",
+            "peeled" to "очищенный", "beaten" to "взбитый", "mashed" to "размятый", "roasted" to "запеченный", "fried" to "обжаренный", "boiled" to "отварной",
+            "cooked" to "готовый", "whole" to "целый", "halved" to "пополам", "finely" to "мелко", "optional" to "по желанию",
+            "preheat" to "разогрейте", "heat" to "нагрейте", "boil" to "варите", "simmer" to "томите", "fry" to "обжарьте", "saute" to "обжарьте", "bake" to "выпекайте",
+            "roast" to "запекайте", "mix" to "смешайте", "stir" to "перемешайте", "whisk" to "взбейте", "beat" to "взбейте", "chop" to "нарежьте", "peel" to "очистите",
+            "grate" to "натрите", "pour" to "влейте", "add" to "добавьте", "place" to "положите", "put" to "положите", "remove" to "выньте", "drain" to "слейте",
+            "cover" to "накройте", "season" to "приправьте", "sprinkle" to "посыпьте", "garnish" to "украсьте", "serve" to "подавайте", "cook" to "готовьте",
+            "leave" to "оставьте", "cool" to "остудите", "oven" to "духовка", "pan" to "сковорода", "pot" to "кастрюля", "bowl" to "миска", "plate" to "тарелка",
+            "minutes" to "минут", "minute" to "минуту", "mins" to "минут", "min" to "мин", "hours" to "часа", "hour" to "час", "seconds" to "секунд", "until" to "до",
+            "tender" to "мягкости", "golden" to "золотистости", "with" to "с", "and" to "и", "or" to "или", "in" to "в", "on" to "на", "for" to "в течение", "then" to "затем"
+        ).sortedByDescending { it.first.length }
+            .map { (en, ru) -> Regex("(?i)(?<![a-zA-Z])${Regex.escape(en)}(?![a-zA-Z])") to ru }
+    }
 
     fun parseCookingMinutesOnce(cookingTime: String): Int {
         val lower = cookingTime.lowercase()
@@ -462,28 +581,6 @@ object CulinaryUtils {
         val angle3 = "https://image.pollinations.ai/prompt/$encoded%20traditional%20cooked%20food%20on%20table%20gourmet?width=600&height=400&nologo=true&seed=${seedBase + 99}"
         return if (!primaryThumbUrl.isNullOrBlank()) listOf(primaryThumbUrl, angle1, angle2) else listOf(angle1, angle2, angle3)
     }
-
-    private val AREA_TO_RUSSIAN_CUISINE = mapOf(
-        "russian" to "Русская", "korean" to "Корейская", "french" to "Французская", "italian" to "Итальянская",
-        "japanese" to "Японская", "georgian" to "Грузинская", "mexican" to "Мексиканская", "chinese" to "Китайская",
-        "thai" to "Тайская", "indian" to "Индийская", "greek" to "Греческая", "spanish" to "Испанская",
-        "turkish" to "Турецкая", "vietnamese" to "Вьетнамская", "moroccan" to "Марокканская", "american" to "Американская",
-        "british" to "Британская", "polish" to "Польская", "ukrainian" to "Украинская", "croatian" to "Хорватская",
-        "irish" to "Ирландская", "jamaican" to "Ямайская", "egyptian" to "Египетская", "dutch" to "Голландская",
-        "portuguese" to "Португальская", "canadian" to "Канадская", "malaysian" to "Малайзийская", "tunisian" to "Тунисская",
-        "filipino" to "Филиппинская", "kenyan" to "Кенийская", "norwegian" to "Норвежская", "australian" to "Австралийская"
-    )
-
-    private val CUISINE_FLAGS = mapOf(
-        "Русская" to "🇷🇺", "Корейская" to "🇰🇷", "Французская" to "🇫🇷", "Итальянская" to "🇮🇹",
-        "Японская" to "🇯🇵", "Грузинская" to "🇬🇪", "Мексиканская" to "🇲🇽", "Китайская" to "🇨🇳",
-        "Тайская" to "🇹🇭", "Индийская" to "🇮🇳", "Греческая" to "🇬🇷", "Испанская" to "🇪🇸",
-        "Турецкая" to "🇹🇷", "Вьетнамская" to "🇻🇳", "Марокканская" to "🇲🇦", "Американская" to "🇺🇸",
-        "Британская" to "🇬🇧", "Польская" to "🇵🇱", "Украинская" to "🇺🇦", "Хорватская" to "🇭🇷",
-        "Ирландская" to "🇮🇪", "Ямайская" to "🇯🇲", "Египетская" to "🇪🇬", "Голландская" to "🇳🇱",
-        "Португальская" to "🇵🇹", "Канадская" to "🇨🇦", "Малайзийская" to "🇲🇾", "Тунисская" to "🇹🇳",
-        "Филиппинская" to "🇵🇭", "Домашняя" to "🏠"
-    )
 
     fun buildDishDescription(title: String, cuisine: String, category: String, ingredients: List<String>): String {
         val coreIngs = ingredients.take(4)
@@ -545,98 +642,6 @@ object CulinaryUtils {
     }
 
     fun formatCuisineWithFlag(cuisine: String): String = "${CUISINE_FLAGS[cuisine] ?: "🌍"} $cuisine"
-
-    private val SPEECH_REPLACEMENTS = listOf(
-        Regex("(\\d+)\\s*-\\s*(\\d+)") to "$1 или $2",
-        Regex("(?i)\\bст\\.?\\s*л\\.?") to "столовых ложек",
-        Regex("(?i)\\bч\\.?\\s*л\\.?") to "чайных ложек",
-        Regex("(?i)(\\d+)\\s*г\\b\\.?") to "$1 граммов",
-        Regex("(?i)(\\d+)\\s*гр\\b\\.?") to "$1 граммов",
-        Regex("(?i)(\\d+)\\s*кг\\b\\.?") to "$1 килограммов",
-        Regex("(?i)(\\d+)\\s*мл\\b\\.?") to "$1 миллилитров",
-        Regex("(?i)(\\d+)\\s*л\\b\\.?") to "$1 литров",
-        Regex("(?i)(\\d+)\\s*шт\\.?") to "$1 штуки",
-        Regex("(?i)(\\d+)\\s*мин\\.?") to "$1 минут",
-        Regex("(?i)(\\d+)\\s*ч\\b\\.?") to "$1 час"
-    )
-
-    private val UNIT_PRE_REPLACEMENTS = listOf(
-        Regex("(?i)\\b(\\d+)\\s+1/2\\b") to "$1.5", Regex("(?i)\\b(\\d+)\\s+1/4\\b") to "$1.25",
-        Regex("(?i)\\b(\\d+)\\s+3/4\\b") to "$1.75", Regex("(?i)\\b(\\d+)\\s+1/3\\b") to "$1.3",
-        Regex("(?i)\\b(\\d+)\\s+2/3\\b") to "$1.7", Regex("(?i)\\b1/2\\b") to "0.5",
-        Regex("(?i)\\b1/4\\b") to "0.25", Regex("(?i)\\b3/4\\b") to "0.75",
-        Regex("(?i)\\b1/3\\b") to "0.3", Regex("(?i)\\b2/3\\b") to "0.7",
-        Regex("(?i)(\\d+)\\s*g\\b") to "$1 г", Regex("(?i)(\\d+)\\s*kg\\b") to "$1 кг",
-        Regex("(?i)(\\d+)\\s*ml\\b") to "$1 мл", Regex("(?i)(\\d+)\\s*oz\\b") to "$1 унц.",
-        Regex("(?i)(\\d+)\\s*lb(?:s)?\\b") to "$1 фунт.", Regex("(?i)\\btbsp(?:s)?\\b") to "ст.л.",
-        Regex("(?i)\\btblsp(?:s)?\\b") to "ст.л.", Regex("(?i)\\btablespoon(?:s)?\\b") to "ст.л.",
-        Regex("(?i)\\btsp(?:s)?\\b") to "ч.л.", Regex("(?i)\\bteaspoon(?:s)?\\b") to "ч.л."
-    )
-
-    private val CULINARY_DICTIONARY: List<Pair<Regex, String>> = listOf(
-        "graham cracker crumbs" to "крошка песочного печенья", "graham crackers" to "песочное печенье", "graham cracker" to "песочное печенье",
-        "digestive biscuits" to "песочное печенье", "evaporated milk" to "концентрированное молоко", "condensed milk" to "сгущенное молоко",
-        "extra virgin olive oil" to "оливковое масло", "sunflower oil" to "подсолнечное масло", "vegetable oil" to "растительное масло",
-        "sesame seed oil" to "кунжутное масло", "sesame oil" to "кунжутное масло", "coconut oil" to "кокосовое масло", "olive oil" to "оливковое масло",
-        "unsalted butter" to "сливочное масло", "salted butter" to "сливочное масло", "melted butter" to "растопленное масло",
-        "chicken breast" to "куриная грудка", "chicken breasts" to "куриные грудки", "chicken thighs" to "куриные бедра", "chicken wings" to "куриные крылышки",
-        "chicken stock" to "куриный бульон", "chicken broth" to "куриный бульон", "beef stock" to "говяжий бульон", "vegetable stock" to "овощной бульон",
-        "minced beef" to "говяжий фарш", "ground beef" to "говяжий фарш", "minced pork" to "свиной фарш", "ground pork" to "свиной фарш",
-        "heavy cream" to "жирные сливки", "double cream" to "сливки", "single cream" to "сливки", "sour cream" to "сметана", "cream cheese" to "сливочный сыр",
-        "cheddar cheese" to "сыр Чеддер", "parmesan cheese" to "сыр Пармезан", "mozzarella cheese" to "сыр Моцарелла", "feta cheese" to "сыр Фета",
-        "spring onions" to "зеленый лук", "spring onion" to "зеленый лук", "green onions" to "зеленый лук", "red onion" to "красный лук",
-        "garlic cloves" to "зубчики чеснока", "garlic clove" to "зубчик чеснока", "cloves garlic" to "зубчика чеснока", "garlic powder" to "сушеный чеснок",
-        "cherry tomatoes" to "томаты черри", "chopped tomatoes" to "рубленые томаты", "tomato puree" to "томатное пюре", "tomato paste" to "томатная паста",
-        "tomato sauce" to "томатный соус", "soy sauce" to "соевый соус", "fish sauce" to "рыбный соус", "oyster sauce" to "устричный соус",
-        "worcestershire sauce" to "вустерский соус", "hot sauce" to "острый соус", "white wine vinegar" to "белый винный уксус", "apple cider vinegar" to "яблочный уксус",
-        "balsamic vinegar" to "бальзамический уксус", "rice vinegar" to "рисовый уксус", "lemon juice" to "лимонный сок", "lime juice" to "сок лайма",
-        "all-purpose flour" to "пшеничная мука", "plain flour" to "пшеничная мука", "self-raising flour" to "мука с разрыхлителем", "cornstarch" to "кукурузный крахмал",
-        "corn flour" to "кукурузный крахмал", "baking powder" to "разрыхлитель", "baking soda" to "сода", "bicarbonate of soda" to "сода",
-        "caster sugar" to "мелкий сахар", "brown sugar" to "коричневый сахар", "icing sugar" to "сахарная пудра", "powdered sugar" to "сахарная пудра",
-        "vanilla extract" to "ванильный экстракт", "black pepper" to "черный перец", "cayenne pepper" to "кайенский перец", "chili powder" to "порошок чили",
-        "bell pepper" to "болгарский перец", "sweet potatoes" to "батат", "bay leaf" to "лавровый лист", "bay leaves" to "лавровый лист",
-        "egg yolks" to "яичные желтки", "egg yolk" to "желток", "egg whites" to "яичные белки", "coconut milk" to "кокосовое молоко",
-        "bread crumbs" to "панировочные сухари", "breadcrumbs" to "панировочные сухари", "sesame seeds" to "кунжут", "peanut butter" to "арахисовая паста",
-        "to taste" to "по вкусу", "for garnish" to "для украшения", "to serve" to "для подачи", "finely chopped" to "мелко нарезанный", "thinly sliced" to "тонко нарезанный",
-        "preheat the oven" to "разогрейте духовку", "medium heat" to "средний огонь", "golden brown" to "золотистая корочка", "frying pan" to "сковорода",
-        "chicken" to "курица", "beef" to "говядина", "pork" to "свинина", "lamb" to "баранина", "turkey" to "индейка", "duck" to "утка", "bacon" to "бекон",
-        "sausage" to "колбаски", "ham" to "ветчина", "meat" to "мясо", "mince" to "фарш", "salmon" to "лосось", "tuna" to "тунец", "cod" to "треска", "fish" to "рыба",
-        "shrimp" to "креветки", "prawns" to "креветки", "prawn" to "креветка", "seafood" to "морепродукты", "potatoes" to "картофель", "potato" to "картофель",
-        "carrots" to "морковь", "carrot" to "морковь", "onions" to "лук", "onion" to "лук", "shallots" to "лук-шалот", "leek" to "лук-порей",
-        "garlic" to "чеснок", "ginger" to "имбирь", "tomatoes" to "томаты", "tomato" to "томат", "cucumber" to "огурец", "cabbage" to "капуста",
-        "broccoli" to "брокколи", "cauliflower" to "цветная капуста", "spinach" to "шпинат", "lettuce" to "салат", "celery" to "сельдерей",
-        "zucchini" to "кабачок", "courgette" to "кабачок", "eggplant" to "баклажан", "aubergine" to "баклажан", "pumpkin" to "тыква",
-        "mushrooms" to "грибы", "mushroom" to "грибы", "peas" to "горошек", "beans" to "фасоль", "lentils" to "чечевица", "chickpeas" to "нут", "corn" to "кукуруза",
-        "avocado" to "авокадо", "olives" to "оливки", "beetroot" to "свекла", "peppers" to "перец", "parsley" to "петрушка", "cilantro" to "кинза",
-        "coriander" to "кориандр", "dill" to "укроп", "basil" to "базилик", "mint" to "мята", "rosemary" to "розмарин", "thyme" to "тимьян", "oregano" to "орегано",
-        "paprika" to "паприка", "cumin" to "зира", "turmeric" to "куркума", "cinnamon" to "корица", "nutmeg" to "мускатный орех", "cloves" to "зубчика",
-        "clove" to "зубчик", "cardamom" to "кардамон", "vanilla" to "ваниль", "curry" to "карри", "chili" to "чили", "chilli" to "чили", "mustard" to "горчица",
-        "mayonnaise" to "майонез", "ketchup" to "кетчуп", "vinegar" to "уксус", "sauce" to "соус", "paste" to "паста", "stock" to "бульон", "broth" to "бульон",
-        "water" to "вода", "milk" to "молоко", "cream" to "сливки", "butter" to "сливочное масло", "yogurt" to "йогурт", "cheese" to "сыр", "parmesan" to "Пармезан",
-        "mozzarella" to "Моцарелла", "cheddar" to "Чеддер", "ricotta" to "Рикотта", "mascarpone" to "Маскарпоне", "tofu" to "сыр тофу", "eggs" to "яйца", "egg" to "яйцо",
-        "yolk" to "желток", "yolks" to "желтки", "flour" to "мука", "sugar" to "сахар", "salt" to "соль", "pepper" to "перец", "honey" to "мёд", "syrup" to "сироп",
-        "chocolate" to "шоколад", "cocoa" to "какао", "yeast" to "дрожжи", "starch" to "крахмал", "rice" to "рис", "pasta" to "паста", "spaghetti" to "спагетти",
-        "noodles" to "лапша", "noodle" to "лапша", "lasagne" to "лазанья", "oats" to "овсянка", "bread" to "хлеб", "baguette" to "багет", "tortillas" to "тортильи",
-        "dough" to "тесто", "pastry" to "тесто", "crumbs" to "крошка", "apple" to "яблоко", "apples" to "яблоки", "banana" to "банан", "lemon" to "лимон",
-        "lime" to "лайм", "orange" to "апельсин", "strawberries" to "клубника", "berries" to "ягоды", "raisins" to "изюм", "walnuts" to "грецкие орехи",
-        "almonds" to "миндаль", "peanuts" to "арахис", "cashews" to "кешью", "nuts" to "орехи", "coconut" to "кокос", "oil" to "масло",
-        "cups" to "стакана", "cup" to "стакан", "tbsp" to "ст.л.", "tbs" to "ст.л.", "tsp" to "ч.л.", "oz" to "унц.", "lb" to "фунт.", "grams" to "г", "gram" to "г",
-        "pinch" to "щепотка", "dash" to "щепотка", "handful" to "горсть", "bunch" to "пучок", "slice" to "ломтик", "slices" to "ломтика", "piece" to "кусочек",
-        "pieces" to "кусочка", "can" to "банка", "tin" to "банка", "packet" to "уп.", "pkg" to "уп.", "fillet" to "филе", "breast" to "грудка", "thighs" to "бедра",
-        "large" to "крупный", "medium" to "средний", "small" to "мелкий", "fresh" to "свежий", "dried" to "сушеный", "frozen" to "замороженный", "smoked" to "копченый",
-        "sweet" to "сладкий", "hot" to "острый", "spicy" to "пряный", "warm" to "теплый", "cold" to "холодный", "boiling" to "кипящий", "melted" to "растопленный",
-        "chopped" to "нарезанный", "diced" to "кубиками", "sliced" to "ломтиками", "minced" to "измельченный", "grated" to "тертый", "crushed" to "раздавленный",
-        "peeled" to "очищенный", "beaten" to "взбитый", "mashed" to "размятый", "roasted" to "запеченный", "fried" to "обжаренный", "boiled" to "отварной",
-        "cooked" to "готовый", "whole" to "целый", "halved" to "пополам", "finely" to "мелко", "optional" to "по желанию",
-        "preheat" to "разогрейте", "heat" to "нагрейте", "boil" to "варите", "simmer" to "томите", "fry" to "обжарьте", "saute" to "обжарьте", "bake" to "выпекайте",
-        "roast" to "запекайте", "mix" to "смешайте", "stir" to "перемешайте", "whisk" to "взбейте", "beat" to "взбейте", "chop" to "нарежьте", "peel" to "очистите",
-        "grate" to "натрите", "pour" to "влейте", "add" to "добавьте", "place" to "положите", "put" to "положите", "remove" to "выньте", "drain" to "слейте",
-        "cover" to "накройте", "season" to "приправьте", "sprinkle" to "посыпьте", "garnish" to "украсьте", "serve" to "подавайте", "cook" to "готовьте",
-        "leave" to "оставьте", "cool" to "остудите", "oven" to "духовка", "pan" to "сковорода", "pot" to "кастрюля", "bowl" to "миска", "plate" to "тарелка",
-        "minutes" to "минут", "minute" to "минуту", "mins" to "минут", "min" to "мин", "hours" to "часа", "hour" to "час", "seconds" to "секунд", "until" to "до",
-        "tender" to "мягкости", "golden" to "золотистости", "with" to "с", "and" to "и", "or" to "или", "in" to "в", "on" to "на", "for" to "в течение", "then" to "затем"
-    ).sortedByDescending { it.first.length }
-        .map { (en, ru) -> Regex("(?i)(?<![a-zA-Z])${Regex.escape(en)}(?![a-zA-Z])") to ru }
 
     fun hasLatin(text: String): Boolean = LATIN_REGEX.containsMatchIn(text)
 
@@ -754,27 +759,32 @@ object CulinaryUtils {
     }
 }
 // =========================================================================
-// ХРАНИЛИЩЕ И ГОЛОСОВОЙ ДВИЖОК
+// ХРАНИЛИЩЕ И ГОЛОСОВОЙ ДВИЖОК (С ЗАЩИТОЙ ОТ СБОЕВ ПРИ СТАРТЕ)
 // =========================================================================
 class RecipeStorage(context: Context) {
     private val prefs = context.getSharedPreferences("chef_app_v10_storage", Context.MODE_PRIVATE)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    init {
-        val cachedTransJson = prefs.getString("translation_cache_json", null)
-        if (!cachedTransJson.isNullOrBlank()) {
-            try {
+    fun preloadTranslationCache() {
+        try {
+            val cachedTransJson = prefs.getString("translation_cache_json", null)
+            if (!cachedTransJson.isNullOrBlank()) {
                 val obj = JSONObject(cachedTransJson)
                 obj.keys().forEach { k -> RecipeRepository.putCachedTranslation(k, obj.getString(k)) }
-            } catch (_: Exception) {}
-        }
+            }
+        } catch (_: Exception) {}
     }
 
-    fun isDarkTheme(systemDefault: Boolean): Boolean = if (prefs.contains("dark_mode")) prefs.getBoolean("dark_mode", systemDefault) else systemDefault
+    fun isDarkTheme(systemDefault: Boolean): Boolean = try {
+        if (prefs.contains("dark_mode")) prefs.getBoolean("dark_mode", systemDefault) else systemDefault
+    } catch (_: Exception) { systemDefault }
+
     fun saveDarkTheme(enabled: Boolean) = prefs.edit().putBoolean("dark_mode", enabled).apply()
     fun loadGitHubRepo(): String = prefs.getString("github_repo_path", DEFAULT_GITHUB_REPO) ?: DEFAULT_GITHUB_REPO
     fun saveGitHubRepo(repo: String) = prefs.edit().putString("github_repo_path", repo.trim()).apply()
-    fun loadStringSet(key: String): List<String> = prefs.getStringSet(key, emptySet())?.toList() ?: emptyList()
+    fun loadStringSet(key: String): List<String> = try {
+        prefs.getStringSet(key, emptySet())?.toList() ?: emptyList()
+    } catch (_: Exception) { emptyList() }
 
     fun loadRecipeList(key: String): List<Recipe> {
         val raw = prefs.getString(key, null) ?: return emptyList()
@@ -788,14 +798,16 @@ class RecipeStorage(context: Context) {
         val fridgeCopy = fridge.toSet(); val cartCopy = cart.toSet()
         val favCopy = favorites.toList(); val customCopy = customRecipes.toList()
         ioScope.launch {
-            val favArr = JSONArray().apply { favCopy.forEach { put(it.toJson()) } }
-            val customArr = JSONArray().apply { customCopy.forEach { put(it.toJson()) } }
-            val transObj = JSONObject(RecipeRepository.exportTranslationCacheSnapshot())
-            prefs.edit()
-                .putStringSet("fridge", fridgeCopy).putStringSet("cart", cartCopy)
-                .putString("fav_recipes_json", favArr.toString())
-                .putString("custom_recipes_json", customArr.toString())
-                .putString("translation_cache_json", transObj.toString()).apply()
+            try {
+                val favArr = JSONArray().apply { favCopy.forEach { put(it.toJson()) } }
+                val customArr = JSONArray().apply { customCopy.forEach { put(it.toJson()) } }
+                val transObj = JSONObject(RecipeRepository.exportTranslationCacheSnapshot())
+                prefs.edit()
+                    .putStringSet("fridge", fridgeCopy).putStringSet("cart", cartCopy)
+                    .putString("fav_recipes_json", favArr.toString())
+                    .putString("custom_recipes_json", customArr.toString())
+                    .putString("translation_cache_json", transObj.toString()).apply()
+            } catch (_: Exception) {}
         }
     }
 }
@@ -834,7 +846,9 @@ class SpeechManager(private val context: Context, private val onSpeakingStateCha
                 }
             }
         }
-        ttsEngine = try { TextToSpeech(context, initListener, "com.google.android.tts") } catch (_: Exception) { TextToSpeech(context, initListener) }
+        ttsEngine = try { TextToSpeech(context, initListener, "com.google.android.tts") } catch (_: Exception) {
+            try { TextToSpeech(context, initListener) } catch (_: Exception) { null }
+        }
     }
 
     private fun updateState(newRootId: String?) { currentRootId = newRootId; onSpeakingStateChanged(newRootId) }
@@ -1034,11 +1048,15 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
         }
     }
 
-    LaunchedEffect(Unit) { checkUpdatesNow(showToast = false) }
-
-    var recipes by remember { mutableStateOf(RecipeRepository.buildLocalDatabaseRecipes("Все", "Все", emptyList(), customUserRecipes, 10, 0)) }
+    var recipes by remember { mutableStateOf<List<Recipe>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var activeLoadJob by remember { mutableStateOf<Job?>(null) }
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { storage.preloadTranslationCache() }
+        recipes = RecipeRepository.buildLocalDatabaseRecipes("Все", "Все", fridgeItems.toList(), customUserRecipes.toList(), 10, 0)
+        checkUpdatesNow(showToast = false)
+    }
 
     fun pickRandomLuckyDish() {
         speechManager.stop(); showOnlyFavorites = false; searchQuery = ""; isFiltersExpanded = false
@@ -2114,7 +2132,7 @@ fun StepTimerWidget(timerKey: String, timerInfo: ParsedTimer, isDarkTheme: Boole
 }
 
 // =========================================================================
-// РЕПОЗИТОРИЙ ДАННЫХ И ЛОКАЛЬНАЯ БАЗА БЛЮД
+// РЕПОЗИТОРИЙ ДАННЫХ С БЕЗОПАСНОЙ LAZY-ИНИЦИАЛИЗАЦИЕЙ БАЗЫ
 // =========================================================================
 object RecipeRepository {
     private val translationSemaphore = Semaphore(4)
@@ -2455,34 +2473,37 @@ object RecipeRepository {
         return exactMatches.take(count)
     }
 
-    private val CURATED_LOCAL_RECIPES = listOf(
-        Recipe("loc_borscht", "Классический борщ с говядиной и сметаной", "Традиционный густой суп насыщенного рубинового цвета на наваристом говяжьем бульоне со свеклой, свежей капустой и чесноком.", "Русская", "Супы", "1 ч 20 мин", "Средне", 135, listOf("https://www.themealdb.com/images/media/meals/vvstvq1487342592.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"), listOf("Говядина на кости - 500 г", "Свекла - 2 шт.", "Капуста белокочанная - 300 г", "Картофель - 4 шт.", "Томатная паста - 2 ст.л.", "Сметана - 3 ст.л."), listOf("Сварите наваристый бульон из говядины в течение 45 минут, затем достаньте мясо и нарежьте кусочками.", "В кипящий бульон отправьте нарезанный кубиками картофель и нашинкованную капусту, варите 15 минут.", "Обжарьте на сковороде тертую свеклу, морковь и лук с томатной пастой в течение 8 минут.", "Соедините зажарку с супом, добавьте чеснок и лавровый лист, томите под крышкой еще 10 минут.")),
-        Recipe("loc_chicken_rice", "Курица с рисом и овощами на одной сковороде", "Удобное и сытное домашнее блюдо в одной посуде: сочные кусочки курицы и рассыпчатый рис, пропитанные ароматом чеснока и моркови.", "Русская", "Вторые блюда", "40 мин", "Легко", 240, listOf("https://www.themealdb.com/images/media/meals/sypxpx1515365095.jpg", "https://images.unsplash.com/photo-1512058564366-18510be2db19?w=600"), listOf("Курица (филе или бедра) - 500 г", "Рис длиннозерный - 250 г", "Морковь - 1 шт.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Масло растительное - 2 ст.л."), listOf("Нарежьте курицу небольшими кусочками и обжарьте на сковороде до золотистой корочки в течение 8 минут.", "Добавьте нарезанный лук и тертую морковь, обжаривайте вместе еще 5 минут.", "Всыпьте промытый рис, разровняйте, влейте 500 мл горячей подсоленной воды и убавьте огонь до минимума.", "Накройте плотной крышкой и томите 20 минут, пока рис полностью не впитает бульон.")),
-        Recipe("loc_kartoshka", "Домашнее пирожное «Картошка» с соленой карамелью", "Знаменитый шоколадно-песочный десерт без выпечки с бархатистой текстурой какао и насыщенным вкусом карамельной сгущенки.", "Русская", "Что-то к чаю", "30 мин", "Легко", 380, listOf("https://www.themealdb.com/images/media/meals/tqtywx1468317395.jpg", "https://www.themealdb.com/images/media/meals/qxutws1486978099.jpg"), listOf("Печенье песочное - 400 г", "Вареная сгущенка (соленая карамель) - 250 г", "Сливочное масло - 100 г", "Какао-порошок - 4 ст.л."), listOf("Измельчите песочное печенье в мелкую крошку с помощью блендера или скалки.", "Смешайте крошку с 3 столовыми ложками какао, мягким сливочным маслом и карамельной сгущенкой.", "Сформируйте руками аккуратные овальные пирожные и обваляйте их в оставшемся какао.", "Уберите пирожные в холодильник на 20 минут для застывания перед подачей к чаю.")),
-        Recipe("loc_syrniki", "Пышные творожные сырники на завтрак", "Нежные домашние сырники с румяной золотистой корочкой и мягкой творожной серединкой, подаются со сметаной или ягодами.", "Русская", "Каши и завтраки", "25 мин", "Легко", 220, listOf("https://www.themealdb.com/images/media/meals/rwuyqx1511383174.jpg", "https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=600"), listOf("Творог 9% - 400 г", "Яйца - 1 шт.", "Мука пшеничная или рисовая - 3 ст.л.", "Сахар - 2 ст.л.", "Сметана - 3 ст.л."), listOf("Протрите творог вилкой, добавьте яйцо, сахар и щепотку ванилина, тщательно перемешайте.", "Всыпьте муку и замесите мягкую творожную массу, сформуйте ровные круглые шайбочки.", "Обжаривайте сырники на разогретой сковороде на среднем огне по 5 минут с каждой стороны до румяной корочки.")),
-        Recipe("loc_stroganoff", "Бефстроганов из говядины с грибами в сметанном соусе", "Классическое блюдо русской кухни: тонкие ломтики сочной говядины, томленные с шампиньонами и луком в густом сливочно-сметанном соусе.", "Русская", "Вторые блюда", "45 мин", "Средне", 265, listOf("https://www.themealdb.com/images/media/meals/svprys1511176755.jpg", "https://www.themealdb.com/images/media/meals/ursuup1487348423.jpg"), listOf("Говядина (вырезка) - 500 г", "Грибы шампиньоны - 250 г", "Сметана 20% - 200 г", "Лук репчатый - 2 шт.", "Мука - 1 ст.л."), listOf("Нарежьте говядину тонкими брусочками и быстро обжарьте на сильном огне в течение 6 минут.", "Отдельно обжарьте нарезанный лук и ломтики шампиньонов в течение 8 минут до золотистости.", "Соедините мясо с грибами, присыпьте столовой ложкой муки, добавьте сметану и 100 мл теплой воды.", "Тушите под крышкой на слабом огне 15 минут до загустения нежного соуса.")),
-        Recipe("loc_charlottka", "Пышная домашняя шарлотка с яблоками и корицей", "Воздушный бисквитный пирог с сочной кисло-сладкой яблочной начинкой и теплым пряным ароматом молотой корицы.", "Русская", "Выпечка", "45 мин", "Легко", 250, listOf("https://www.themealdb.com/images/media/meals/qtqvys1468573168.jpg", "https://www.themealdb.com/images/media/meals/xvsurr1511719182.jpg"), listOf("Яблоки кисло-сладкие - 4 шт.", "Яйца - 4 шт.", "Сахар - 150 г", "Мука - 160 г", "Корица молотая - 1 ч.л."), listOf("Взбейте яйца с сахаром миксером в пышную светлую пену в течение 5 минут.", "Аккуратно просейте муку и перемешайте лопаткой снизу вверх, чтобы тесто осталось воздушным.", "Выложите дольки яблок с корицей в смазанную форму, залейте тестом и выпекайте 35 минут при 180°C.")),
-        Recipe("loc_olivier", "Домашний салат Оливье с куриным филе", "Любимый праздничный и повседневный салат из нежного куриного филе, отварных овощей, маринованных огурчиков и зеленого горошка.", "Русская", "Салаты", "30 мин", "Легко", 195, listOf("https://www.themealdb.com/images/media/meals/1549542994.jpg", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"), listOf("Курица отварная - 300 г", "Картофель - 3 шт.", "Яйца - 3 шт.", "Морковь - 1 шт.", "Огурцы маринованные - 3 шт.", "Горошек зеленый - 150 г"), listOf("Отварите картофель, морковь и яйца в течение 20 минут, остудите и очистите.", "Нарежьте куриное филе, овощи и яйца одинаковыми мелкими кубиками.", "Добавьте зеленый горошек, заправьте сметаной или майонезом и охладите в холодильнике 10 минут.")),
-        Recipe("loc_kimchi_soup", "Острый корейский суп Кимчи Тиге со свининой и тофу", "Знаменитый согревающий суп корейской кухни с пикантной ферментированной капустой кимчи, нежным сыром тофу и мясом.", "Корейская", "Супы", "35 мин", "Легко", 190, listOf("https://www.themealdb.com/images/media/meals/1529446352.jpg", "https://images.unsplash.com/photo-1583224964978-2257b960c3d3?w=600"), listOf("Капуста кимчи - 300 г", "Свинина или курица - 250 г", "Сыр тофу - 150 г", "Яйца - 1 шт.", "Лук зеленый - 1 пучок"), listOf("Нарежьте мясо и капусту кимчи кусочками и обжарьте в глубокой кастрюле в течение 7 минут.", "Влейте 600 мл горячей воды или бульона, доведите до кипения и варите на среднем огне 15 минут.", "Добавьте нарезанный кубиками сыр тофу, вбейте яйцо и варите еще 4 минуты, посыпав зеленым луком.")),
-        Recipe("loc_korean_chicken", "Хрустящая курица по-корейски в кисло-сладком соусе Яннём", "Популярный корейский хит: кусочки курицы в тонкой хрустящей корочке, покрытые глянцевой медово-чесночной глазурью с кунжутом.", "Корейская", "Вторые блюда", "40 мин", "Средне", 310, listOf("https://www.themealdb.com/images/media/meals/1529444830.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"), listOf("Курица (филе или крылышки) - 600 г", "Крахмал кукурузный - 4 ст.л.", "Чеснок - 3 зубчика", "Томатный соус - 3 ст.л.", "Мед - 2 ст.л.", "Кунжут - 1 ст.л."), listOf("Нарежьте курицу кусочками, обваляйте в кукурузном крахмале и обжарьте в масле 12 минут до хрустящей корочки.", "В отдельной сковороде смешайте измельченный чеснок, томатный соус, соевый соус и мед, прогрейте 3 минуты.", "Переложите хрустящую курицу в горячий соус, быстро перемешайте и посыпьте семенами кунжута.")),
-        Recipe("loc_bibimbap", "Пибимпап (Корейский рис с говядиной, овощами и яйцом)", "Красочная корейская чаша на основе теплого риса, украшенная обжаренным пряным мясом, соломкой овощей и яичницей с жидким желтком.", "Корейская", "Вторые блюда", "30 мин", "Легко", 275, listOf("https://www.themealdb.com/images/media/meals/z0ageb1583189517.jpg", "https://images.unsplash.com/photo-1553163147-622ab57be1c7?w=600"), listOf("Рис круглозерный - 250 г", "Фарш говяжий - 250 г", "Яйца - 2 шт.", "Морковь - 1 шт.", "Огурец - 1 шт.", "Соевый соус - 2 ст.л."), listOf("Отварите рис в подсоленной воде в течение 15 минут до рассыпчатости.", "Обжарьте говяжий фарш с соевым соусом и чесноком в течение 8 минут, отдельно поджарьте соломку моркови 4 минуты.", "Поджарьте яичницу-глазунью в течение 3 минут, выложите на горячий рис вместе с мясом и овощами.")),
-        Recipe("loc_bulgogi", "Пулькоги (Мраморная говядина по-корейски в кунжутном маринаде)", "Тончайшие ломтики говядины, маринованные в соевом соусе с чесноком и медом, быстро обжаренные на сильном огне с луком.", "Корейская", "Вторые блюда", "25 мин", "Легко", 260, listOf("https://www.themealdb.com/images/media/meals/1529443236.jpg", "https://www.themealdb.com/images/media/meals/1529444113.jpg"), listOf("Говядина - 500 г", "Соевый соус - 4 ст.л.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Сахар или мед - 1 ст.л.", "Кунжут - 1 ст.л."), listOf("Тонко нарежьте говядину и замаринуйте в соевом соусе с измельченным чесноком и медом на 10 минут.", "Разогрейте сковороду на сильном огне, выложите мясо с полукольцами лука и обжаривайте 8 минут, помешивая.", "Посыпьте готовое мясо обжаренным кунжутом и зеленым луком, подавайте с рисом.")),
-        Recipe("loc_korean_carrots", "Пикантный корейский салат из моркови с чесноком и кориандром", "Хрустящая сочная морковь, нашинкованная тонкой соломкой и заправленная горячим пряным маслом с чесноком и молотым кориандром.", "Корейская", "Салаты", "20 мин", "Легко", 145, listOf("https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"), listOf("Морковь сочная - 500 г", "Чеснок - 4 зубчика", "Масло растительное - 4 ст.л.", "Уксус яблочный - 2 ст.л.", "Кориандр молотый - 1 ч.л.", "Сахар - 1 ч.л."), listOf("Натрите морковь длинной тонкой соломкой, посыпьте солью и сахаром, слегка помните руками в течение 3 минут.", "Выложите сверху горкой измельченный чеснок и молотый кориандр.", "Раскалите растительное масло на сковороде в течение 4 минут, вылейте прямо на чеснок со специями, добавьте уксус и перемешайте.")),
-        Recipe("loc_gyeran_mari", "Керан Мари (Пышный корейский яичный рулет с сыром и овощами)", "Традиционный корейский завтрак: многослойный нежный омлет-рулет с тягучим сыром внутри, нарезанный порционными кусочками.", "Корейская", "Каши и завтраки", "15 мин", "Легко", 210, listOf("https://www.themealdb.com/images/media/meals/1550440197.jpg", "https://images.unsplash.com/photo-1525351484163-7529414344d8?w=600"), listOf("Яйца - 4 шт.", "Молоко - 2 ст.л.", "Сыр твердый - 60 г", "Морковь - 0.5 шт.", "Лук зеленый - 2 пера"), listOf("Взбейте яйца с молоком и солью, вмешайте очень мелко нарезанную морковь и зеленый лук.", "Вылейте треть смеси тонким слоем на разогретую сковороду, жарьте 2 минуты, посыпьте сыром и сверните в рулет на край сковороды.", "Долейте оставшуюся яичную смесь в 2 приема, каждый раз оборачивая рулет новыми слоями в течение 5 минут, затем нарежьте ломтиками.")),
-        Recipe("loc_french_gratin", "Французский картофельный гратен Дофинуа со сливками и сыром", "Изысканная французская запеканка из тончайших ломтиков картофеля, томленных в чесночных сливках под румяной сырной корочкой.", "Французская", "Вторые блюда", "50 мин", "Легко", 265, listOf("https://www.themealdb.com/images/media/meals/qwrtut1468418027.jpg", "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=600"), listOf("Картофель - 800 г", "Сыр твердый - 150 г", "Молоко или сливки - 300 мл", "Чеснок - 2 зубчика", "Сливочное масло - 30 г"), listOf("Очистите картофель и нарежьте тонкими кружочками толщиной около 3 миллиметров.", "Натрите форму для запекания зубчиком чеснока и сливочным маслом, уложите картофель внахлест.", "Залейте горячими сливками с солью, посыпьте тертым сыром и запекайте 40 минут при 190°C до золотистой корочки.")),
-        Recipe("loc_french_soup", "Французский луковый суп с сырными гренками", "Классика парижских бистро: густой бульон из карамелизированного в сливочном масле лука, запеченный под шапкой из багета и тягучего сыра.", "Французская", "Супы", "45 мин", "Средне", 210, listOf("https://www.themealdb.com/images/media/meals/xvrrux1511783685.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"), listOf("Лук репчатый - 500 г", "Сыр твердый - 120 г", "Сливочное масло - 50 г", "Багет или белый хлеб - 4 ломтика", "Мясной бульон - 700 мл"), listOf("Нарежьте лук тонкими полукольцами и томите на сливочном масле на медленном огне 20 минут до карамельного оттенка.", "Влейте горячий бульон, посолите и варите на слабом огне еще 15 минут.", "Разлейте суп по формам, сверху положите подсушенный багет, щедро посыпьте сыром и запекайте 5 минут в духовке.")),
-        Recipe("loc_croissants", "Французские круассаны с запеченным миндальным кремом", "Хрустящая слоеная выпечка с нежной орехово-сливочной начинкой франжипан и сахарной пудрой — идеальное дополнение к утреннему чаю или кофе.", "Французская", "Что-то к чаю", "30 мин", "Легко", 390, listOf("https://www.themealdb.com/images/media/meals/tlstrw1511724769.jpg", "https://www.themealdb.com/images/media/meals/wtqrqw1511639627.jpg"), listOf("Готовые круассаны - 4 шт.", "Миндальная мука или орехи - 100 г", "Сливочное масло - 80 г", "Яйца - 2 шт.", "Сахарная пудра - 80 г"), listOf("Взбейте размягченное сливочное масло с сахарной пудрой, яйцами и молотым миндалем в пышный крем.", "Разрежьте круассаны вдоль пополам, щедро смажьте миндальным кремом внутри и сверху.", "Запекайте в разогретой до 180°C духовке в течение 15 минут до хрустящей румяной корочки.")),
-        Recipe("loc_julienne", "Французский жульен с курицей и грибами под сырной корочкой", "Горячая сливочно-грибная закуска с нежным куриным филе и тягучей золотистой корочкой запеченного сыра.", "Французская", "Вторые блюда", "30 мин", "Легко", 280, listOf("https://www.themealdb.com/images/media/meals/uuuspp1511297945.jpg", "https://www.themealdb.com/images/media/meals/1548772327.jpg"), listOf("Курица (филе) - 300 г", "Грибы шампиньоны - 300 г", "Сыр твердый - 150 г", "Сливки или сметана - 200 г", "Лук репчатый - 1 шт."), listOf("Мелко нарежьте куриное филе, грибы и лук, обжарьте на сковороде в течение 10 минут.", "Влейте сливки или сметану, посолите и прогрейте смесь еще 4 минуты до легкого загустения.", "Разложите по формам, обильно посыпьте тертым сыром и запекайте в духовке 12 минут при 190°C.")),
-        Recipe("loc_carbonara", "Итальянская паста Карбонара с беконом и Пармезаном", "Знаменитая римская паста с хрустящими ломтиками бекона и шелковистым соусом на основе яичных желтков и тертого сыра Пармезан.", "Итальянская", "Паста и пицца", "20 мин", "Легко", 340, listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg", "https://images.unsplash.com/photo-1612874742237-6526221588e3?w=600"), listOf("Спагетти - 300 г", "Бекон или грудинка - 150 г", "Яйца (желтки) - 3 шт.", "Сыр Пармезан - 80 г", "Чеснок - 2 зубчика"), listOf("Отварите спагетти в кипящей подсоленной воде в течение 9 минут до состояния аль денте.", "Нарежьте бекон ломтиками и обжарьте на сковороде с раздавленным зубчиком чеснока в течение 5 минут.", "В миске взбейте яичные желтки с мелко натертым сыром и черным перцем, добавьте 3 ложки воды от пасты.", "Переложите горячие спагетти к бекону, снимите с огня, влейте яично-сырный соус и энергично перемешайте.")),
-        Recipe("loc_pizza", "Домашняя итальянская пицца Маргарита с томатами и Моцареллой", "Классическая неаполитанская пицца на тонком тесте с ароматным томатным соусом, тягучей Моцареллой и свежим базиликом.", "Итальянская", "Паста и пицца", "30 мин", "Легко", 285, listOf("https://www.themealdb.com/images/media/meals/x0lk931587671540.jpg", "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=600"), listOf("Тесто для пиццы - 400 г", "Сыр Моцарелла - 250 г", "Томаты спелые - 3 шт.", "Томатный соус - 4 ст.л.", "Масло оливковое и базилик"), listOf("Раскатайте тесто в тонкую круглую лепешку и переложите на противень, застеленный пергаментом.", "Смажьте основу томатным соусом с орегано, разложите кружочки томатов и ломтики сыра Моцарелла.", "Выпекайте в максимально разогретой до 220°C духовке в течение 15 минут до расплавления сыра.")),
-        Recipe("loc_caesar", "Салат Цезарь с обжаренной куриной грудкой, сыром и сухариками", "Легкий и хрустящий салат из свежих листьев с румяными ломтиками куриного филе, чесночными гренками, черри и тертым сыром.", "Итальянская", "Салаты", "25 мин", "Легко", 215, listOf("https://www.themealdb.com/images/media/meals/urtwux1486983078.jpg", "https://images.unsplash.com/photo-1550304943-4f24f54ddde9?w=600"), listOf("Курица (филе) - 300 г", "Салат листовой или пекинская капуста - 1 пучок", "Томаты черри - 150 г", "Сыр твердый - 60 г", "Хлеб белый - 3 ломтика"), listOf("Нарежьте белый хлеб кубиками и подсушите на сковороде с каплей масла и чесноком в течение 5 минут.", "Обжарьте куриное филе со специями по 6 минут с каждой стороны, затем нарежьте ломтиками.", "Порвите листья салата в глубокую тарелку, выложите курицу, половинки томатов, сухарики и посыпьте тертым сыром.")),
-        Recipe("loc_khachapuri", "Грузинский хачапури по-аджарски с сыром и желтком", "Знаменитая грузинская открытая лепешка-лодочка с расплавленным тягучим сыром Сулугуни, сливочным маслом и жидким яичным желтком.", "Грузинская", "Выпечка", "45 мин", "Средне", 330, listOf("https://www.themealdb.com/images/media/meals/sywswr1511383814.jpg", "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600"), listOf("Тесто дрожжевое - 400 г", "Сыр Сулугуни или Моцарелла - 350 г", "Яйца - 2 шт.", "Сливочное масло - 30 г"), listOf("Раскатайте тесто в овал, сверните края трубочками к центру и защипните концы, формируя лодочку.", "Натрите сыр на крупной терке, смешайте с двумя ложками воды и щедро наполните лодочку.", "Выпекайте в разогретой до 200°C духовке в течение 20 минут до румяных бортиков.", "Выньте хачапури, сделайте углубление в сыре, влейте желток и верните в духовку еще на 2 минуты.")),
-        Recipe("loc_chkmeruli", "Чкмерули (Курица по-грузински в сливочно-чесночном соусе)", "Румяная зажаренная курица, томленная в густом соусе из сливок, чеснока, кинзы и грузинских пряностей хмели-сунели.", "Грузинская", "Вторые блюда", "40 мин", "Легко", 290, listOf("https://www.themealdb.com/images/media/meals/qtuwxu1468233098.jpg", "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?w=600"), listOf("Курица - 700 г", "Сливки или молоко - 250 мл", "Чеснок - 5 зубчиков", "Кинза и петрушка - 1 пучок", "Хмели-сунели - 1 ч.л."), listOf("Натрите кусочки курицы солью и обжарьте на сковороде под гнетом по 8 минут с каждой стороны до золотистой корочки.", "Измельчите чеснок и зелень, смешайте с теплыми сливками и пряностью хмели-сунели.", "Залейте курицу сливочно-чесночным соусом и томите на слабом огне 12 минут.")),
-        Recipe("loc_ramen", "Японский домашний Рамен с курицей, лапшой и яйцом", "Насыщенный японский суп с пшеничной лапшой, пряным соево-чесночным бульоном, ломтиками курицы, грибами и яйцом всмятку.", "Японская", "Супы", "35 мин", "Легко", 230, listOf("https://www.themealdb.com/images/media/meals/swttys1511385853.jpg", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600"), listOf("Курица (филе) - 350 г", "Лапша пшеничная или рамен - 200 г", "Яйца - 2 шт.", "Грибы шампиньоны - 150 г", "Соевый соус - 3 ст.л."), listOf("Сварите куриное филе в 1 литре воды с добавлением соевого соуса, чеснока и ломтиков грибов в течение 20 минут.", "Отдельно отварите яйца всмятку ровно 6 минут после закипания, остудите в холодной воде и очистите.", "Отварите лапшу в течение 4 минут, разложите по глубоким мискам, залейте горячим бульоном и украсьте ломтиками курицы и половинками яйца.")),
-        Recipe("loc_teriyaki", "Курица Терияки с кунжутом и рассыпчатым рисом", "Быстрое японское блюдо: сочные кусочки курицы, карамелизированные в густом сладко-соленом соусе терияки с рассыпчатым рисом.", "Японская", "Вторые блюда", "25 мин", "Легко", 245, listOf("https://www.themealdb.com/images/media/meals/wvpsxx1468256321.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"), listOf("Курица (филе или бедра) - 500 г", "Рис - 200 г", "Соевый соус - 4 ст.л.", "Мед или сахар - 2 ст.л.", "Чеснок - 2 зубчика"), listOf("Отварите рис в подсоленной воде в течение 15 минут.", "Нарежьте курицу полосками и обжарьте на сильном огне в течение 7 минут до румяности.", "Влейте смесь соевого соуса, меда и чеснока, карамелизуйте курицу еще 4 минуты и подавайте с рисом.")),
-        Recipe("loc_quesadilla", "Мексиканская Кесадилья с курицей, сыром и томатами", "Хрустящие пшеничные лепешки тортильи с горячей начинкой из обжаренного куриного филе, сладкой кукурузы, томатов и расплавленного сыра.", "Мексиканская", "Вторые блюда", "20 мин", "Легко", 290, listOf("https://www.themealdb.com/images/media/meals/uvuyxu1503067369.jpg", "https://www.themealdb.com/images/media/meals/ypxvwv1505333929.jpg"), listOf("Курица (филе) - 300 г", "Сыр твердый - 150 г", "Томаты - 2 шт.", "Лепешки тортильи или лаваш - 4 шт.", "Кукуруза консервированная - 100 г"), listOf("Мелко нарежьте куриное филе и обжарьте на сковороде с кубиками томатов и кукурузой в течение 8 минут.", "На половину каждой лепешки выложите слой тертого сыра, горячую куриную начинку и еще немного сыра, сложите пополам.", "Обжарьте сложенные кесадильи на сухой сковороде по 3 минуты с каждой стороны до хрустящей корочки и расплавления сыра.")),
-        Recipe("loc_tomyum", "Тайский суп Том Ям с креветками, грибами и кокосовым молоком", "Знаменитый кисло-острый суп Таиланда на нежном кокосовом молоке с креветками, шампиньонами, томатами черри и свежим соком лайма.", "Тайская", "Супы", "25 мин", "Средне", 175, listOf("https://www.themealdb.com/images/media/meals/1529445434.jpg", "https://images.unsplash.com/photo-1548943487-a2e4e43b4853?w=600"), listOf("Креветки или курица - 300 г", "Грибы шампиньоны - 150 г", "Кокосовое молоко или сливки - 200 мл", "Томаты черри - 100 г", "Лимон или лайм - 1 шт."), listOf("Доведите 500 мл бульона до кипения, добавьте нарезанные грибы и варите 7 минут.", "Добавьте очищенные креветки, половинки томатов черри и влейте кокосовое молоко, варите еще 5 минут.", "Приправьте соком лайма и подавайте горячим с отварным рисом.")),
-        Recipe("loc_tikka", "Индийская Курица Тикка Масала в пряном томатно-сливочном соусе", "Ароматное блюдо индийской кухни: мягкие кусочки куриного филе, тушенные в бархатистом соусе из сливок, томатов, чеснока и специй карри.", "Индийская", "Вторые блюда", "35 мин", "Легко", 260, listOf("https://www.themealdb.com/images/media/meals/wyxwsp1486979827.jpg", "https://www.themealdb.com/images/media/meals/qptpvt1487339892.jpg"), listOf("Курица (филе) - 500 г", "Сливки или сметана - 200 мл", "Томатный соус - 4 ст.л.", "Чеснок - 3 зубчика", "Карри и паприка - 2 ч.л."), listOf("Нарежьте куриное филе кубиками и обжарьте со специями карри и чесноком в течение 8 минут.", "Добавьте томатный соус и теплые сливки, перемешайте и тушите на слабом огне 15 минут до густоты.", "Подавайте ароматную курицу с рассыпчатым рисом или теплыми лепешками.")),
-        Recipe("loc_chinese_chicken", "Курица в кисло-сладком соусе с болгарским перцем по-китайски", "Яркое блюдо китайской кухни на воке: сочные кусочки куриного филе, обжаренные с хрустящим сладким перцем в густом кисло-сладком соусе.", "Китайская", "Вторые блюда", "25 мин", "Легко", 255, listOf("https://www.themealdb.com/images/media/meals/1525873040.jpg", "https://www.themealdb.com/images/media/meals/1529444830.jpg"), listOf("Курица (филе) - 500 г", "Перец болгарский - 2 шт.", "Соевый соус - 3 ст.л.", "Томатный соус - 2 ст.л.", "Крахмал - 2 ст.л.", "Мед или сахар - 1 ст.л."), listOf("Нарежьте куриное филе кубиками, обваляйте в крахмале и быстро обжарьте на сильном огне 7 минут.", "Добавьте крупно нарезанный болгарский перец и обжаривайте еще 4 минуты.", "Влейте смесь соевого соуса, томатного соуса и меда, прогрейте 3 минуты до карамельной глазури."))
-    )
+    // ИСПРАВЛЕНО: Ленивая инициализация (by lazy) гарантирует отсутствие NullPointerException при запуске!
+    private val CURATED_LOCAL_RECIPES: List<Recipe> by lazy {
+        listOf(
+            Recipe("loc_borscht", "Классический борщ с говядиной и сметаной", "Традиционный густой суп насыщенного рубинового цвета на наваристом говяжьем бульоне со свеклой, свежей капустой и чесноком.", "Русская", "Супы", "1 ч 20 мин", "Средне", 135, listOf("https://www.themealdb.com/images/media/meals/vvstvq1487342592.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"), listOf("Говядина на кости - 500 г", "Свекла - 2 шт.", "Капуста белокочанная - 300 г", "Картофель - 4 шт.", "Томатная паста - 2 ст.л.", "Сметана - 3 ст.л."), listOf("Сварите наваристый бульон из говядины в течение 45 минут, затем достаньте мясо и нарежьте кусочками.", "В кипящий бульон отправьте нарезанный кубиками картофель и нашинкованную капусту, варите 15 минут.", "Обжарьте на сковороде тертую свеклу, морковь и лук с томатной пастой в течение 8 минут.", "Соедините зажарку с супом, добавьте чеснок и лавровый лист, томите под крышкой еще 10 минут.")),
+            Recipe("loc_chicken_rice", "Курица с рисом и овощами на одной сковороде", "Удобное и сытное домашнее блюдо в одной посуде: сочные кусочки курицы и рассыпчатый рис, пропитанные ароматом чеснока и моркови.", "Русская", "Вторые блюда", "40 мин", "Легко", 240, listOf("https://www.themealdb.com/images/media/meals/sypxpx1515365095.jpg", "https://images.unsplash.com/photo-1512058564366-18510be2db19?w=600"), listOf("Курица (филе или бедра) - 500 г", "Рис длиннозерный - 250 г", "Морковь - 1 шт.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Масло растительное - 2 ст.л."), listOf("Нарежьте курицу небольшими кусочками и обжарьте на сковороде до золотистой корочки в течение 8 минут.", "Добавьте нарезанный лук и тертую морковь, обжаривайте вместе еще 5 минут.", "Всыпьте промытый рис, разровняйте, влейте 500 мл горячей подсоленной воды и убавьте огонь до минимума.", "Накройте плотной крышкой и томите 20 минут, пока рис полностью не впитает бульон.")),
+            Recipe("loc_kartoshka", "Домашнее пирожное «Картошка» с соленой карамелью", "Знаменитый шоколадно-песочный десерт без выпечки с бархатистой текстурой какао и насыщенным вкусом карамельной сгущенки.", "Русская", "Что-то к чаю", "30 мин", "Легко", 380, listOf("https://www.themealdb.com/images/media/meals/tqtywx1468317395.jpg", "https://www.themealdb.com/images/media/meals/qxutws1486978099.jpg"), listOf("Печенье песочное - 400 г", "Вареная сгущенка (соленая карамель) - 250 г", "Сливочное масло - 100 г", "Какао-порошок - 4 ст.л."), listOf("Измельчите песочное печенье в мелкую крошку с помощью блендера или скалки.", "Смешайте крошку с 3 столовыми ложками какао, мягким сливочным маслом и карамельной сгущенкой.", "Сформируйте руками аккуратные овальные пирожные и обваляйте их в оставшемся какао.", "Уберите пирожные в холодильник на 20 минут для застывания перед подачей к чаю.")),
+            Recipe("loc_syrniki", "Пышные творожные сырники на завтрак", "Нежные домашние сырники с румяной золотистой корочкой и мягкой творожной серединкой, подаются со сметаной или ягодами.", "Русская", "Каши и завтраки", "25 мин", "Легко", 220, listOf("https://www.themealdb.com/images/media/meals/rwuyqx1511383174.jpg", "https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=600"), listOf("Творог 9% - 400 г", "Яйца - 1 шт.", "Мука пшеничная или рисовая - 3 ст.л.", "Сахар - 2 ст.л.", "Сметана - 3 ст.л."), listOf("Протрите творог вилкой, добавьте яйцо, сахар и щепотку ванилина, тщательно перемешайте.", "Всыпьте муку и замесите мягкую творожную массу, сформуйте ровные круглые шайбочки.", "Обжаривайте сырники на разогретой сковороде на среднем огне по 5 минут с каждой стороны до румяной корочки.")),
+            Recipe("loc_stroganoff", "Бефстроганов из говядины с грибами в сметанном соусе", "Классическое блюдо русской кухни: тонкие ломтики сочной говядины, томленные с шампиньонами и луком в густом сливочно-сметанном соусе.", "Русская", "Вторые блюда", "45 мин", "Средне", 265, listOf("https://www.themealdb.com/images/media/meals/svprys1511176755.jpg", "https://www.themealdb.com/images/media/meals/ursuup1487348423.jpg"), listOf("Говядина (вырезка) - 500 г", "Грибы шампиньоны - 250 г", "Сметана 20% - 200 г", "Лук репчатый - 2 шт.", "Мука - 1 ст.л."), listOf("Нарежьте говядину тонкими брусочками и быстро обжарьте на сильном огне в течение 6 минут.", "Отдельно обжарьте нарезанный лук и ломтики шампиньонов в течение 8 минут до золотистости.", "Соедините мясо с грибами, присыпьте столовой ложкой муки, добавьте сметану и 100 мл теплой воды.", "Тушите под крышкой на слабом огне 15 минут до загустения нежного соуса.")),
+            Recipe("loc_charlottka", "Пышная домашняя шарлотка с яблоками и корицей", "Воздушный бисквитный пирог с сочной кисло-сладкой яблочной начинкой и теплым пряным ароматом молотой корицы.", "Русская", "Выпечка", "45 мин", "Легко", 250, listOf("https://www.themealdb.com/images/media/meals/qtqvys1468573168.jpg", "https://www.themealdb.com/images/media/meals/xvsurr1511719182.jpg"), listOf("Яблоки кисло-сладкие - 4 шт.", "Яйца - 4 шт.", "Сахар - 150 г", "Мука - 160 г", "Корица молотая - 1 ч.л."), listOf("Взбейте яйца с сахаром миксером в пышную светлую пену в течение 5 минут.", "Аккуратно просейте муку и перемешайте лопаткой снизу вверх, чтобы тесто осталось воздушным.", "Выложите дольки яблок с корицей в смазанную форму, залейте тестом и выпекайте 35 минут при 180°C.")),
+            Recipe("loc_olivier", "Домашний салат Оливье с куриным филе", "Любимый праздничный и повседневный салат из нежного куриного филе, отварных овощей, маринованных огурчиков и зеленого горошка.", "Русская", "Салаты", "30 мин", "Легко", 195, listOf("https://www.themealdb.com/images/media/meals/1549542994.jpg", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"), listOf("Курица отварная - 300 г", "Картофель - 3 шт.", "Яйца - 3 шт.", "Морковь - 1 шт.", "Огурцы маринованные - 3 шт.", "Горошек зеленый - 150 г"), listOf("Отварите картофель, морковь и яйца в течение 20 минут, остудите и очистите.", "Нарежьте куриное филе, овощи и яйца одинаковыми мелкими кубиками.", "Добавьте зеленый горошек, заправьте сметаной или майонезом и охладите в холодильнике 10 минут.")),
+            Recipe("loc_kimchi_soup", "Острый корейский суп Кимчи Тиге со свининой и тофу", "Знаменитый согревающий суп корейской кухни с пикантной ферментированной капустой кимчи, нежным сыром тофу и мясом.", "Корейская", "Супы", "35 мин", "Легко", 190, listOf("https://www.themealdb.com/images/media/meals/1529446352.jpg", "https://images.unsplash.com/photo-1583224964978-2257b960c3d3?w=600"), listOf("Капуста кимчи - 300 г", "Свинина или курица - 250 г", "Сыр тофу - 150 г", "Яйца - 1 шт.", "Лук зеленый - 1 пучок"), listOf("Нарежьте мясо и капусту кимчи кусочками и обжарьте в глубокой кастрюле в течение 7 минут.", "Влейте 600 мл горячей воды или бульона, доведите до кипения и варите на среднем огне 15 минут.", "Добавьте нарезанный кубиками сыр тофу, вбейте яйцо и варите еще 4 минуты, посыпав зеленым луком.")),
+            Recipe("loc_korean_chicken", "Хрустящая курица по-корейски в кисло-сладком соусе Яннём", "Популярный корейский хит: кусочки курицы в тонкой хрустящей корочке, покрытые глянцевой медово-чесночной глазурью с кунжутом.", "Корейская", "Вторые блюда", "40 мин", "Средне", 310, listOf("https://www.themealdb.com/images/media/meals/1529444830.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"), listOf("Курица (филе или крылышки) - 600 г", "Крахмал кукурузный - 4 ст.л.", "Чеснок - 3 зубчика", "Томатный соус - 3 ст.л.", "Мед - 2 ст.л.", "Кунжут - 1 ст.л."), listOf("Нарежьте курицу кусочками, обваляйте в кукурузном крахмале и обжарьте в масле 12 минут до хрустящей корочки.", "В отдельной сковороде смешайте измельченный чеснок, томатный соус, соевый соус и мед, прогрейте 3 минуты.", "Переложите хрустящую курицу в горячий соус, быстро перемешайте и посыпьте семенами кунжута.")),
+            Recipe("loc_bibimbap", "Пибимпап (Корейский рис с говядиной, овощами и яйцом)", "Красочная корейская чаша на основе теплого риса, украшенная обжаренным пряным мясом, соломкой овощей и яичницей с жидким желтком.", "Корейская", "Вторые блюда", "30 мин", "Легко", 275, listOf("https://www.themealdb.com/images/media/meals/z0ageb1583189517.jpg", "https://images.unsplash.com/photo-1553163147-622ab57be1c7?w=600"), listOf("Рис круглозерный - 250 г", "Фарш говяжий - 250 г", "Яйца - 2 шт.", "Морковь - 1 шт.", "Огурец - 1 шт.", "Соевый соус - 2 ст.л."), listOf("Отварите рис в подсоленной воде в течение 15 минут до рассыпчатости.", "Обжарьте говяжий фарш с соевым соусом и чесноком в течение 8 минут, отдельно поджарьте соломку моркови 4 минуты.", "Поджарьте яичницу-глазунью в течение 3 минут, выложите на горячий рис вместе с мясом и овощами.")),
+            Recipe("loc_bulgogi", "Пулькоги (Мраморная говядина по-корейски в кунжутном маринаде)", "Тончайшие ломтики говядины, маринованные в соевом соусе с чесноком и медом, быстро обжаренные на сильном огне с луком.", "Корейская", "Вторые блюда", "25 мин", "Легко", 260, listOf("https://www.themealdb.com/images/media/meals/1529443236.jpg", "https://www.themealdb.com/images/media/meals/1529444113.jpg"), listOf("Говядина - 500 г", "Соевый соус - 4 ст.л.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Сахар или мед - 1 ст.л.", "Кунжут - 1 ст.л."), listOf("Тонко нарежьте говядину и замаринуйте в соевом соусе с измельченным чесноком и медом на 10 минут.", "Разогрейте сковороду на сильном огне, выложите мясо с полукольцами лука и обжаривайте 8 минут, помешивая.", "Посыпьте готовое мясо обжаренным кунжутом и зеленым луком, подавайте с рисом.")),
+            Recipe("loc_korean_carrots", "Пикантный корейский салат из моркови с чесноком и кориандром", "Хрустящая сочная морковь, нашинкованная тонкой соломкой и заправленная горячим пряным маслом с чесноком и молотым кориандром.", "Корейская", "Салаты", "20 мин", "Легко", 145, listOf("https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600", "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"), listOf("Морковь сочная - 500 г", "Чеснок - 4 зубчика", "Масло растительное - 4 ст.л.", "Уксус яблочный - 2 ст.л.", "Кориандр молотый - 1 ч.л.", "Сахар - 1 ч.л."), listOf("Натрите морковь длинной тонкой соломкой, посыпьте солью и сахаром, слегка помните руками в течение 3 минут.", "Выложите сверху горкой измельченный чеснок и молотый кориандр.", "Раскалите растительное масло на сковороде в течение 4 минут, вылейте прямо на чеснок со специями, добавьте уксус и перемешайте.")),
+            Recipe("loc_gyeran_mari", "Керан Мари (Пышный корейский яичный рулет с сыром и овощами)", "Традиционный корейский завтрак: многослойный нежный омлет-рулет с тягучим сыром внутри, нарезанный порционными кусочками.", "Корейская", "Каши и завтраки", "15 мин", "Легко", 210, listOf("https://www.themealdb.com/images/media/meals/1550440197.jpg", "https://images.unsplash.com/photo-1525351484163-7529414344d8?w=600"), listOf("Яйца - 4 шт.", "Молоко - 2 ст.л.", "Сыр твердый - 60 г", "Морковь - 0.5 шт.", "Лук зеленый - 2 пера"), listOf("Взбейте яйца с молоком и солью, вмешайте очень мелко нарезанную морковь и зеленый лук.", "Вылейте треть смеси тонким слоем на разогретую сковороду, жарьте 2 минуты, посыпьте сыром и сверните в рулет на край сковороды.", "Долейте оставшуюся яичную смесь в 2 приема, каждый раз оборачивая рулет новыми слоями в течение 5 минут, затем нарежьте ломтиками.")),
+            Recipe("loc_french_gratin", "Французский картофельный гратен Дофинуа со сливками и сыром", "Изысканная французская запеканка из тончайших ломтиков картофеля, томленных в чесночных сливках под румяной сырной корочкой.", "Французская", "Вторые блюда", "50 мин", "Легко", 265, listOf("https://www.themealdb.com/images/media/meals/qwrtut1468418027.jpg", "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=600"), listOf("Картофель - 800 г", "Сыр твердый - 150 г", "Молоко или сливки - 300 мл", "Чеснок - 2 зубчика", "Сливочное масло - 30 г"), listOf("Очистите картофель и нарежьте тонкими кружочками толщиной около 3 миллиметров.", "Натрите форму для запекания зубчиком чеснока и сливочным маслом, уложите картофель внахлест.", "Залейте горячими сливками с солью, посыпьте тертым сыром и запекайте 40 минут при 190°C до золотистой корочки.")),
+            Recipe("loc_french_soup", "Французский луковый суп с сырными гренками", "Классика парижских бистро: густой бульон из карамелизированного в сливочном масле лука, запеченный под шапкой из багета и тягучего сыра.", "Французская", "Супы", "45 мин", "Средне", 210, listOf("https://www.themealdb.com/images/media/meals/xvrrux1511783685.jpg", "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"), listOf("Лук репчатый - 500 г", "Сыр твердый - 120 г", "Сливочное масло - 50 г", "Багет или белый хлеб - 4 ломтика", "Мясной бульон - 700 мл"), listOf("Нарежьте лук тонкими полукольцами и томите на сливочном масле на медленном огне 20 минут до карамельного оттенка.", "Влейте горячий бульон, посолите и варите на слабом огне еще 15 минут.", "Разлейте суп по формам, сверху положите подсушенный багет, щедро посыпьте сыром и запекайте 5 минут в духовке.")),
+            Recipe("loc_croissants", "Французские круассаны с запеченным миндальным кремом", "Хрустящая слоеная выпечка с нежной орехово-сливочной начинкой франжипан и сахарной пудрой — идеальное дополнение к утреннему чаю или кофе.", "Французская", "Что-то к чаю", "30 мин", "Легко", 390, listOf("https://www.themealdb.com/images/media/meals/tlstrw1511724769.jpg", "https://www.themealdb.com/images/media/meals/wtqrqw1511639627.jpg"), listOf("Готовые круассаны - 4 шт.", "Миндальная мука или орехи - 100 г", "Сливочное масло - 80 г", "Яйца - 2 шт.", "Сахарная пудра - 80 г"), listOf("Взбейте размягченное сливочное масло с сахарной пудрой, яйцами и молотым миндалем в пышный крем.", "Разрежьте круассаны вдоль пополам, щедро смажьте миндальным кремом внутри и сверху.", "Запекайте в разогретой до 180°C духовке в течение 15 минут до хрустящей румяной корочки.")),
+            Recipe("loc_julienne", "Французский жульен с курицей и грибами под сырной корочкой", "Горячая сливочно-грибная закуска с нежным куриным филе и тягучей золотистой корочкой запеченного сыра.", "Французская", "Вторые блюда", "30 мин", "Легко", 280, listOf("https://www.themealdb.com/images/media/meals/uuuspp1511297945.jpg", "https://www.themealdb.com/images/media/meals/1548772327.jpg"), listOf("Курица (филе) - 300 г", "Грибы шампиньоны - 300 г", "Сыр твердый - 150 г", "Сливки или сметана - 200 г", "Лук репчатый - 1 шт."), listOf("Мелко нарежьте куриное филе, грибы и лук, обжарьте на сковороде в течение 10 минут.", "Влейте сливки или сметану, посолите и прогрейте смесь еще 4 минуты до легкого загустения.", "Разложите по формам, обильно посыпьте тертым сыром и запекайте в духовке 12 минут при 190°C.")),
+            Recipe("loc_carbonara", "Итальянская паста Карбонара с беконом и Пармезаном", "Знаменитая римская паста с хрустящими ломтиками бекона и шелковистым соусом на основе яичных желтков и тертого сыра Пармезан.", "Итальянская", "Паста и пицца", "20 мин", "Легко", 340, listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg", "https://images.unsplash.com/photo-1612874742237-6526221588e3?w=600"), listOf("Спагетти - 300 г", "Бекон или грудинка - 150 г", "Яйца (желтки) - 3 шт.", "Сыр Пармезан - 80 г", "Чеснок - 2 зубчика"), listOf("Отварите спагетти в кипящей подсоленной воде в течение 9 минут до состояния аль денте.", "Нарежьте бекон ломтиками и обжарьте на сковороде с раздавленным зубчиком чеснока в течение 5 минут.", "В миске взбейте яичные желтки с мелко натертым сыром и черным перцем, добавьте 3 ложки воды от пасты.", "Переложите горячие спагетти к бекону, снимите с огня, влейте яично-сырный соус и энергично перемешайте.")),
+            Recipe("loc_pizza", "Домашняя итальянская пицца Маргарита с томатами и Моцареллой", "Классическая неаполитанская пицца на тонком тесте с ароматным томатным соусом, тягучей Моцареллой и свежим базиликом.", "Итальянская", "Паста и пицца", "30 мин", "Легко", 285, listOf("https://www.themealdb.com/images/media/meals/x0lk931587671540.jpg", "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=600"), listOf("Тесто для пиццы - 400 г", "Сыр Моцарелла - 250 г", "Томаты спелые - 3 шт.", "Томатный соус - 4 ст.л.", "Масло оливковое и базилик"), listOf("Раскатайте тесто в тонкую круглую лепешку и переложите на противень, застеленный пергаментом.", "Смажьте основу томатным соусом с орегано, разложите кружочки томатов и ломтики сыра Моцарелла.", "Выпекайте в максимально разогретой до 220°C духовке в течение 15 минут до расплавления сыра.")),
+            Recipe("loc_caesar", "Салат Цезарь с обжаренной куриной грудкой, сыром и сухариками", "Легкий и хрустящий салат из свежих листьев с румяными ломтиками куриного филе, чесночными гренками, черри и тертым сыром.", "Итальянская", "Салаты", "25 мин", "Легко", 215, listOf("https://www.themealdb.com/images/media/meals/urtwux1486983078.jpg", "https://images.unsplash.com/photo-1550304943-4f24f54ddde9?w=600"), listOf("Курица (филе) - 300 г", "Салат листовой или пекинская капуста - 1 пучок", "Томаты черри - 150 г", "Сыр твердый - 60 г", "Хлеб белый - 3 ломтика"), listOf("Нарежьте белый хлеб кубиками и подсушите на сковороде с каплей масла и чесноком в течение 5 минут.", "Обжарьте куриное филе со специями по 6 минут с каждой стороны, затем нарежьте ломтиками.", "Порвите листья салата в глубокую тарелку, выложите курицу, половинки томатов, сухарики и посыпьте тертым сыром.")),
+            Recipe("loc_khachapuri", "Грузинский хачапури по-аджарски с сыром и желтком", "Знаменитая грузинская открытая лепешка-лодочка с расплавленным тягучим сыром Сулугуни, сливочным маслом и жидким яичным желтком.", "Грузинская", "Выпечка", "45 мин", "Средне", 330, listOf("https://www.themealdb.com/images/media/meals/sywswr1511383814.jpg", "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600"), listOf("Тесто дрожжевое - 400 г", "Сыр Сулугуни или Моцарелла - 350 г", "Яйца - 2 шт.", "Сливочное масло - 30 г"), listOf("Раскатайте тесто в овал, сверните края трубочками к центру и защипните концы, формируя лодочку.", "Натрите сыр на крупной терке, смешайте с двумя ложками воды и щедро наполните лодочку.", "Выпекайте в разогретой до 200°C духовке в течение 20 минут до румяных бортиков.", "Выньте хачапури, сделайте углубление в сыре, влейте желток и верните в духовку еще на 2 минуты.")),
+            Recipe("loc_chkmeruli", "Чкмерули (Курица по-грузински в сливочно-чесночном соусе)", "Румяная зажаренная курица, томленная в густом соусе из сливок, чеснока, кинзы и грузинских пряностей хмели-сунели.", "Грузинская", "Вторые блюда", "40 мин", "Легко", 290, listOf("https://www.themealdb.com/images/media/meals/qtuwxu1468233098.jpg", "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?w=600"), listOf("Курица - 700 г", "Сливки или молоко - 250 мл", "Чеснок - 5 зубчиков", "Кинза и петрушка - 1 пучок", "Хмели-сунели - 1 ч.л."), listOf("Натрите кусочки курицы солью и обжарьте на сковороде под гнетом по 8 минут с каждой стороны до золотистой корочки.", "Измельчите чеснок и зелень, смешайте с теплыми сливками и пряностью хмели-сунели.", "Залейте курицу сливочно-чесночным соусом и томите на слабом огне 12 минут.")),
+            Recipe("loc_ramen", "Японский домашний Рамен с курицей, лапшой и яйцом", "Насыщенный японский суп с пшеничной лапшой, пряным соево-чесночным бульоном, ломтиками курицы, грибами и яйцом всмятку.", "Японская", "Супы", "35 мин", "Легко", 230, listOf("https://www.themealdb.com/images/media/meals/swttys1511385853.jpg", "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600"), listOf("Курица (филе) - 350 г", "Лапша пшеничная или рамен - 200 г", "Яйца - 2 шт.", "Грибы шампиньоны - 150 г", "Соевый соус - 3 ст.л."), listOf("Сварите куриное филе в 1 литре воды с добавлением соевого соуса, чеснока и ломтиков грибов в течение 20 минут.", "Отдельно отварите яйца всмятку ровно 6 минут после закипания, остудите в холодной воде и очистите.", "Отварите лапшу в течение 4 минут, разложите по глубоким мискам, залейте горячим бульоном и украсьте ломтиками курицы и половинками яйца.")),
+            Recipe("loc_teriyaki", "Курица Терияки с кунжутом и рассыпчатым рисом", "Быстрое японское блюдо: сочные кусочки курицы, карамелизированные в густом сладко-соленом соусе терияки с рассыпчатым рисом.", "Японская", "Вторые блюда", "25 мин", "Легко", 245, listOf("https://www.themealdb.com/images/media/meals/wvpsxx1468256321.jpg", "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"), listOf("Курица (филе или бедра) - 500 г", "Рис - 200 г", "Соевый соус - 4 ст.л.", "Мед или сахар - 2 ст.л.", "Чеснок - 2 зубчика"), listOf("Отварите рис в подсоленной воде в течение 15 минут.", "Нарежьте курицу полосками и обжарьте на сильном огне в течение 7 минут до румяности.", "Влейте смесь соевого соуса, меда и чеснока, карамелизуйте курицу еще 4 минуты и подавайте с рисом.")),
+            Recipe("loc_quesadilla", "Мексиканская Кесадилья с курицей, сыром и томатами", "Хрустящие пшеничные лепешки тортильи с горячей начинкой из обжаренного куриного филе, сладкой кукурузы, томатов и расплавленного сыра.", "Мексиканская", "Вторые блюда", "20 мин", "Легко", 290, listOf("https://www.themealdb.com/images/media/meals/uvuyxu1503067369.jpg", "https://www.themealdb.com/images/media/meals/ypxvwv1505333929.jpg"), listOf("Курица (филе) - 300 г", "Сыр твердый - 150 г", "Томаты - 2 шт.", "Лепешки тортильи или лаваш - 4 шт.", "Кукуруза консервированная - 100 г"), listOf("Мелко нарежьте куриное филе и обжарьте на сковороде с кубиками томатов и кукурузой в течение 8 минут.", "На половину каждой лепешки выложите слой тертого сыра, горячую куриную начинку и еще немного сыра, сложите пополам.", "Обжарьте сложенные кесадильи на сухой сковороде по 3 минуты с каждой стороны до хрустящей корочки и расплавления сыра.")),
+            Recipe("loc_tomyum", "Тайский суп Том Ям с креветками, грибами и кокосовым молоком", "Знаменитый кисло-острый суп Таиланда на нежном кокосовом молоке с креветками, шампиньонами, томатами черри и свежим соком лайма.", "Тайская", "Супы", "25 мин", "Средне", 175, listOf("https://www.themealdb.com/images/media/meals/1529445434.jpg", "https://images.unsplash.com/photo-1548943487-a2e4e43b4853?w=600"), listOf("Креветки или курица - 300 г", "Грибы шампиньоны - 150 г", "Кокосовое молоко или сливки - 200 мл", "Томаты черри - 100 г", "Лимон или лайм - 1 шт."), listOf("Доведите 500 мл бульона до кипения, добавьте нарезанные грибы и варите 7 минут.", "Добавьте очищенные креветки, половинки томатов черри и влейте кокосовое молоко, варите еще 5 минут.", "Приправьте соком лайма и подавайте горячим с отварным рисом.")),
+            Recipe("loc_tikka", "Индийская Курица Тикка Масала в пряном томатно-сливочном соусе", "Ароматное блюдо индийской кухни: мягкие кусочки куриного филе, тушенные в бархатистом соусе из сливок, томатов, чеснока и специй карри.", "Индийская", "Вторые блюда", "35 мин", "Легко", 260, listOf("https://www.themealdb.com/images/media/meals/wyxwsp1486979827.jpg", "https://www.themealdb.com/images/media/meals/qptpvt1487339892.jpg"), listOf("Курица (филе) - 500 г", "Сливки или сметана - 200 мл", "Томатный соус - 4 ст.л.", "Чеснок - 3 зубчика", "Карри и паприка - 2 ч.л."), listOf("Нарежьте куриное филе кубиками и обжарьте со специями карри и чесноком в течение 8 минут.", "Добавьте томатный соус и теплые сливки, перемешайте и тушите на слабом огне 15 минут до густоты.", "Подавайте ароматную курицу с рассыпчатым рисом или теплыми лепешками.")),
+            Recipe("loc_chinese_chicken", "Курица в кисло-сладком соусе с болгарским перцем по-китайски", "Яркое блюдо китайской кухни на воке: сочные кусочки куриного филе, обжаренные с хрустящим сладким перцем в густом кисло-сладком соусе.", "Китайская", "Вторые блюда", "25 мин", "Легко", 255, listOf("https://www.themealdb.com/images/media/meals/1525873040.jpg", "https://www.themealdb.com/images/media/meals/1529444830.jpg"), listOf("Курица (филе) - 500 г", "Перец болгарский - 2 шт.", "Соевый соус - 3 ст.л.", "Томатный соус - 2 ст.л.", "Крахмал - 2 ст.л.", "Мед или сахар - 1 ст.л."), listOf("Нарежьте куриное филе кубиками, обваляйте в крахмале и быстро обжарьте на сильном огне 7 минут.", "Добавьте крупно нарезанный болгарский перец и обжаривайте еще 4 минуты.", "Влейте смесь соевого соуса, томатного соуса и меда, прогрейте 3 минуты до карамельной глазури."))
+        )
+    }
 }
