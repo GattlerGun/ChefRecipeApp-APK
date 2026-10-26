@@ -23,6 +23,7 @@ import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -97,6 +98,8 @@ import kotlin.random.Random
 
 private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
 private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
+private const val CURRENT_APP_VERSION = "v1.1"
+private const val WHATS_NEW_TEXT = "• Добавлена кнопка «🎲 Мне повезёт» (случайное блюдо)\n• Экран не гаснет при работающем таймере или озвучке\n• Отображение версии v1.1 в шапке приложения"
 
 // =========================================================================
 // 1. ТЕМА И ЦВЕТОВЫЕ ПАЛИТРЫ
@@ -140,7 +143,7 @@ private val DarkCulinaryColorScheme = darkColorScheme(
 )
 
 // =========================================================================
-// 2. IMMUTABLE МОДЕЛИ ДАННЫХ С ПРЕДВЫЧИСЛЕННЫМИ ПОЛЯМИ (ZERO-LAG SORTING)
+// 2. IMMUTABLE МОДЕЛИ ДАННЫХ С ПРЕДВЫЧИСЛЕННЫМИ ПОЛЯМИ
 // =========================================================================
 @Immutable
 data class Recipe(
@@ -157,7 +160,6 @@ data class Recipe(
     val instructions: List<String>,
     val isCustom: Boolean = false
 ) {
-    // Вычисляются 1 раз при создании объекта, не нагружая процессор при скролле и поиске
     val cookingMinutes: Int = CulinaryUtils.parseCookingMinutesOnce(cookingTime)
     val searchIndexText: String = buildString {
         append(title.lowercase()).append(' ')
@@ -192,7 +194,6 @@ data class Recipe(
             val category = obj.optString("category", "Вторые блюда")
             val ingList = List(ings.length()) { ings.getString(it) }
             val rawDesc = obj.optString("description", "")
-            // Фильтруем старые ссылки на сырые ингредиенты, если они остались в сохраненных рецептах
             val cleanImages = List(imgs.length()) { imgs.getString(it) }
                 .filter { !it.contains("/images/ingredients/", ignoreCase = true) }
                 .ifEmpty { CulinaryUtils.buildDishPhotoUrls(title, 1) }
@@ -496,7 +497,6 @@ object AppUpdateManager {
         var session: PackageInstaller.Session? = null
         try {
             val packageInstaller = context.packageManager.packageInstaller
-            // Очищаем возможные старые незавершенные сессии, чтобы не блокировать установщик
             try {
                 for (oldSession in packageInstaller.mySessions) {
                     packageInstaller.abandonSession(oldSession.sessionId)
@@ -535,7 +535,7 @@ object AppUpdateManager {
 }
 
 // =========================================================================
-// 4. ОПТИМИЗИРОВАННЫЕ КУЛИНАРНЫЕ УТИЛИТЫ И ГЕНЕРАТОР ФОТО ГОТОВЫХ БЛЮД
+// 4. КУЛИНАРНЫЕ УТИЛИТЫ И ГЕНЕРАТОР ФОТО ГОТОВЫХ БЛЮД
 // =========================================================================
 object CulinaryUtils {
     val CUISINES = listOf(
@@ -565,7 +565,6 @@ object CulinaryUtils {
         return hours * 60 + mins
     }
 
-    // Генерация 2-3 фотографий ИМЕННО ГОТОВОГО БЛЮДА с разных ракурсов (никаких фото сырых ингредиентов!)
     fun buildDishPhotoUrls(dishNameForPrompt: String, seedBase: Int, primaryThumbUrl: String? = null): List<String> {
         val cleanName = dishNameForPrompt.replace(Regex("[^a-zA-Zа-яА-ЯёЁ0-9\\s]"), " ").trim()
         val encoded = URLEncoder.encode(cleanName.ifEmpty { "cooked dish" }, "UTF-8").replace("+", "%20")
@@ -933,7 +932,6 @@ object CulinaryUtils {
         return res
     }
 
-    // Быстрое предвычисление корней продуктов холодильника для мгновенной проверки
     fun computeFridgeStems(fridgeItems: List<String>): Set<String> {
         if (fridgeItems.isEmpty()) return emptySet()
         return fridgeItems.mapNotNull { item ->
@@ -951,10 +949,6 @@ object CulinaryUtils {
         if (fridgeStems.isEmpty()) return false
         val lowerIng = recipeIngredient.lowercase()
         return fridgeStems.any { lowerIng.contains(it) }
-    }
-
-    fun isIngredientInFridge(recipeIngredient: String, fridgeItems: List<String>): Boolean {
-        return isIngredientMatchingStems(recipeIngredient, computeFridgeStems(fridgeItems))
     }
 
     fun scaleIngredientAmount(ingredient: String, portions: Int, basePortions: Int = 2): String {
@@ -1068,7 +1062,6 @@ object CulinaryUtils {
         return Triple(newCuisine, newCategory, extracted)
     }
 
-    // ИСПРАВЛЕНО: Освобождаем ToneGenerator через Handler после сигнала, чтобы не забивать аудиоканал
     fun playAlarmSound() {
         try {
             val toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
@@ -1090,7 +1083,6 @@ class RecipeStorage(context: Context) {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
-        // Загружаем сохраненный кэш переводов в память при старте для мгновенного открытия блюд
         val cachedTransJson = prefs.getString("translation_cache_json", null)
         if (!cachedTransJson.isNullOrBlank()) {
             try {
@@ -1382,7 +1374,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 PackageInstaller.STATUS_SUCCESS -> {
-                    Toast.makeText(this, "✅ Приложение успешно обновлено!", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "✅ Обновление до $CURRENT_APP_VERSION успешно установлено!", Toast.LENGTH_LONG).show()
                 }
                 PackageInstaller.STATUS_FAILURE_CONFLICT -> {
                     AppUpdateManager.signatureConflictState = true
@@ -1400,7 +1392,7 @@ class MainActivity : ComponentActivity() {
 }
 
 // =========================================================================
-// 8. ГЛАВНЫЙ ЭКРАН
+// 8. ГЛАВНЫЙ ЭКРАН (ВЕРСИЯ v1.1 С БЕЙДЖЕМ ВЕРСИИ, КНОПКОЙ 🎲 И KEEP-SCREEN-ON)
 // =========================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1413,6 +1405,22 @@ fun RecipeAppScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var currentlySpeakingId by remember { mutableStateOf<String?>(null) }
+    var runningTimersCount by remember { mutableIntStateOf(0) }
+
+    // Новая функция v1.1: Держим экран включенным, пока работает таймер или голосовая озвучка
+    val keepScreenOn = currentlySpeakingId != null || runningTimersCount > 0
+    DisposableEffect(keepScreenOn) {
+        val window = (context as? Activity)?.window
+        if (keepScreenOn) {
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     val speechManager = remember(context) {
         SpeechManager(context) { newId -> currentlySpeakingId = newId }
     }
@@ -1454,7 +1462,6 @@ fun RecipeAppScreen(
     val favoriteRecipes = remember { mutableStateListOf<Recipe>().apply { addAll(storage.loadRecipeList("fav_recipes_json")) } }
     val customUserRecipes = remember { mutableStateListOf<Recipe>().apply { addAll(storage.loadRecipeList("custom_recipes_json")) } }
 
-    // Мемоизированные множества для мгновенной отрисовки карточек без тормозов
     val fridgeStemsSet by remember {
         derivedStateOf { CulinaryUtils.computeFridgeStems(fridgeItems) }
     }
@@ -1480,7 +1487,7 @@ fun RecipeAppScreen(
                 if (info.isNewerThanInstalled) {
                     Toast.makeText(context, "🚀 На GitHub доступна более свежая сборка (${info.publishedFormatted})!", Toast.LENGTH_LONG).show()
                 } else if (showToast) {
-                    Toast.makeText(context, "✅ У вас установлена самая свежая сборка", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "✅ У вас установлена актуальная сборка ($CURRENT_APP_VERSION)", Toast.LENGTH_SHORT).show()
                 }
             }.onFailure { err ->
                 if (showToast) {
@@ -1501,6 +1508,20 @@ fun RecipeAppScreen(
     }
     var isLoading by remember { mutableStateOf(false) }
     var activeLoadJob by remember { mutableStateOf<Job?>(null) }
+
+    // Новая фича v1.1: Кнопка "🎲 Мне повезёт" (выбирает 1 случайное блюдо дня)
+    fun pickRandomLuckyDish() {
+        speechManager.stop()
+        showOnlyFavorites = false
+        searchQuery = ""
+        isFiltersExpanded = false
+        val allPool = customUserRecipes + RecipeRepository.getAllCuratedRecipes() + RecipeRepository.getCachedOnlineRecipes()
+        if (allPool.isNotEmpty()) {
+            val lucky = allPool.random()
+            recipes = listOf(lucky)
+            Toast.makeText(context, "🎲 Случайный выбор Шефа: ${lucky.title}!", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     fun loadRecipes(
         modeToUse: DataSourceMode = selectedMode,
@@ -1550,7 +1571,7 @@ fun RecipeAppScreen(
                         )
                     }
                 }
-                persistAll() // Сохраняем свежие переводы в дисковый кэш
+                persistAll()
             } catch (_: Exception) {
                 recipes = RecipeRepository.buildLocalDatabaseRecipes(
                     cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount, currentSeed
@@ -1639,7 +1660,6 @@ fun RecipeAppScreen(
         }
     }
 
-    // Мгновенная фильтрация по предвычисленному индексу searchIndexText
     val displayedRecipes by remember(
         recipes,
         showOnlyFavorites,
@@ -1740,7 +1760,7 @@ fun RecipeAppScreen(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Обновление с GitHub", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Обновление ($CURRENT_APP_VERSION)", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
             },
             text = {
@@ -1753,7 +1773,18 @@ fun RecipeAppScreen(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Text("📱 Установленная версия: $installedTimeStr", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("📱 Установлена: $CURRENT_APP_VERSION (от $installedTimeStr)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            Text("✨ Что нового в $CURRENT_APP_VERSION:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(WHATS_NEW_TEXT, fontSize = 11.sp)
+                        }
+                    }
 
                     if (isCheckingUpdate) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1773,7 +1804,7 @@ fun RecipeAppScreen(
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
                                     text = if (isNewAvailable) "🚀 Доступна новая версия на GitHub!"
-                                    else "✅ Установлена последняя версия",
+                                    else "✅ Установлена последняя версия ($CURRENT_APP_VERSION)",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
                                     color = if (isNewAvailable) Color(0xFFA5D6A7) else MaterialTheme.colorScheme.onSurface
@@ -1853,7 +1884,7 @@ fun RecipeAppScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
-        // Компактная верхняя строка (42dp)
+        // Компактная верхняя строка (42dp) с бейджем версии v1.1
         Row(
             modifier = Modifier.fillMaxWidth().height(42.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1862,7 +1893,7 @@ fun RecipeAppScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "🍲 Шеф-Повар",
-                    fontSize = 17.sp,
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable {
                         currentScreen = AppScreen.RECIPES
@@ -1870,12 +1901,31 @@ fun RecipeAppScreen(
                         searchQuery = ""
                     }
                 )
-                IconButton(onClick = onToggleDarkTheme, modifier = Modifier.size(30.dp)) {
+                Spacer(modifier = Modifier.width(4.dp))
+                // Наглядный бейдж версии v1.1 в шапке
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.clickable {
+                        showUpdateDialog = true
+                        checkUpdatesNow(showToast = false)
+                    }
+                ) {
+                    Text(
+                        text = CURRENT_APP_VERSION,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                }
+
+                IconButton(onClick = onToggleDarkTheme, modifier = Modifier.size(28.dp)) {
                     Icon(
                         imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
                         contentDescription = "Тема",
                         tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(17.dp)
                     )
                 }
                 Box {
@@ -1884,14 +1934,14 @@ fun RecipeAppScreen(
                             showUpdateDialog = true
                             checkUpdatesNow(showToast = false)
                         },
-                        modifier = Modifier.size(30.dp)
+                        modifier = Modifier.size(28.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.SystemUpdate,
                             contentDescription = "Обновление с GitHub",
                             tint = if (releaseInfo?.isNewerThanInstalled == true) Color(0xFF4CAF50)
                             else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                     }
                     if (releaseInfo?.isNewerThanInstalled == true) {
@@ -1908,12 +1958,12 @@ fun RecipeAppScreen(
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 if (currentlySpeakingId != null) {
-                    IconButton(onClick = { speechManager.stop() }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.VolumeOff, contentDescription = "Стоп", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                    IconButton(onClick = { speechManager.stop() }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.VolumeOff, contentDescription = "Стоп", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(19.dp))
                     }
                 } else {
-                    IconButton(onClick = { speechManager.switchVoiceProfile() }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Default.RecordVoiceOver, contentDescription = "Голос", modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { speechManager.switchVoiceProfile() }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.RecordVoiceOver, contentDescription = "Голос", modifier = Modifier.size(17.dp))
                     }
                 }
 
@@ -1923,13 +1973,13 @@ fun RecipeAppScreen(
                         isSearchVisible = !isSearchVisible
                         if (!isSearchVisible) searchQuery = ""
                     },
-                    modifier = Modifier.size(30.dp)
+                    modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Search,
                         contentDescription = "Поиск",
                         tint = if (isSearchVisible || searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(19.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -1939,13 +1989,13 @@ fun RecipeAppScreen(
                         showOnlyFavorites = false
                         isFiltersExpanded = !isFiltersExpanded
                     },
-                    modifier = Modifier.size(30.dp)
+                    modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Tune,
                         contentDescription = "Фильтры",
                         tint = if (isFiltersExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(19.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -1953,13 +2003,13 @@ fun RecipeAppScreen(
                     onClick = {
                         currentScreen = if (currentScreen == AppScreen.ADD_RECIPE) AppScreen.RECIPES else AppScreen.ADD_RECIPE
                     },
-                    modifier = Modifier.size(30.dp)
+                    modifier = Modifier.size(28.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.AddCircleOutline,
                         contentDescription = "Свой рецепт",
                         tint = if (currentScreen == AppScreen.ADD_RECIPE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(19.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
 
@@ -1967,10 +2017,10 @@ fun RecipeAppScreen(
                     onClick = {
                         currentScreen = if (currentScreen == AppScreen.SHOPPING_LIST) AppScreen.RECIPES else AppScreen.SHOPPING_LIST
                     },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                    modifier = Modifier.height(30.dp)
+                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp)
                 ) {
-                    Text("🛒${shoppingListItems.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("🛒${shoppingListItems.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
 
                 TextButton(
@@ -1978,12 +2028,12 @@ fun RecipeAppScreen(
                         currentScreen = AppScreen.RECIPES
                         showOnlyFavorites = !showOnlyFavorites
                     },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp),
-                    modifier = Modifier.height(30.dp)
+                    contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp)
                 ) {
                     Text(
                         text = "❤️${favoriteRecipes.size}",
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = if (showOnlyFavorites) Color(0xFFE53935) else MaterialTheme.colorScheme.primary
                     )
@@ -2298,34 +2348,51 @@ fun RecipeAppScreen(
                                             modifier = Modifier.weight(1f)
                                         )
                                         if (!showOnlyFavorites && searchQuery.isBlank()) {
-                                            Surface(
-                                                color = MaterialTheme.colorScheme.primary,
-                                                shape = RoundedCornerShape(8.dp),
-                                                modifier = Modifier.clickable {
-                                                    loadRecipes(
-                                                        targetCount = committedLimitCount,
-                                                        collapseHeader = true,
-                                                        forceNewBatch = true
-                                                    )
-                                                }
-                                            ) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                // Новая кнопка v1.1: "🎲 Мне повезёт" (случайное блюдо)
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.tertiary,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.clickable { pickRandomLuckyDish() }
                                                 ) {
-                                                    Icon(
-                                                        Icons.Default.Refresh,
-                                                        contentDescription = "Новые",
-                                                        tint = MaterialTheme.colorScheme.onPrimary,
-                                                        modifier = Modifier.size(14.dp)
-                                                    )
-                                                    Spacer(modifier = Modifier.width(3.dp))
                                                     Text(
-                                                        "Новые",
+                                                        text = "🎲 Случайное",
                                                         fontSize = 11.sp,
                                                         fontWeight = FontWeight.Bold,
-                                                        color = MaterialTheme.colorScheme.onPrimary
+                                                        color = MaterialTheme.colorScheme.onTertiary,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                                     )
+                                                }
+
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    shape = RoundedCornerShape(8.dp),
+                                                    modifier = Modifier.clickable {
+                                                        loadRecipes(
+                                                            targetCount = committedLimitCount,
+                                                            collapseHeader = true,
+                                                            forceNewBatch = true
+                                                        )
+                                                    }
+                                                ) {
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Default.Refresh,
+                                                            contentDescription = "Новые",
+                                                            tint = MaterialTheme.colorScheme.onPrimary,
+                                                            modifier = Modifier.size(14.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(3.dp))
+                                                        Text(
+                                                            "Новые",
+                                                            fontSize = 11.sp,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = MaterialTheme.colorScheme.onPrimary
+                                                        )
+                                                    }
                                                 }
                                             }
                                         }
@@ -2377,6 +2444,9 @@ fun RecipeAppScreen(
                                 isFavorite = isFav,
                                 currentlySpeakingId = currentlySpeakingId,
                                 onSpeakText = { utteranceId, text -> speechManager.speak(utteranceId, text) },
+                                onTimerRunningChanged = { isRunningNow ->
+                                    runningTimersCount = (runningTimersCount + if (isRunningNow) 1 else -1).coerceAtLeast(0)
+                                },
                                 onAddMissingToCart = { missingItems ->
                                     var addedCount = 0
                                     missingItems.forEach { item ->
@@ -2798,7 +2868,7 @@ fun ShoppingListView(
 }
 
 // =========================================================================
-// 11. ОПТИМИЗИРОВАННАЯ КАРТОЧКА РЕЦЕПТА С КАРУСЕЛЬЮ ФОТО САМИХ БЛЮД
+// 11. КАРТОЧКА РЕЦЕПТА
 // =========================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -2811,6 +2881,7 @@ fun RecipeCard(
     isFavorite: Boolean,
     currentlySpeakingId: String?,
     onSpeakText: (String, String) -> Unit,
+    onTimerRunningChanged: (Boolean) -> Unit,
     onAddMissingToCart: (List<String>) -> Unit,
     onToggleFavorite: () -> Unit,
     onDeleteCustom: (() -> Unit)? = null
@@ -3047,7 +3118,6 @@ fun RecipeCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Карусель ТОЛЬКО фотографий готовых блюд с агрессивным кэшированием в RAM и на диск
             val safeImages = recipe.imageUrls.ifEmpty {
                 listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg")
             }
@@ -3256,7 +3326,8 @@ fun RecipeCard(
                         StepTimerWidget(
                             timerKey = stepUtteranceId,
                             timerInfo = timerInfo,
-                            isDarkTheme = isDarkTheme
+                            isDarkTheme = isDarkTheme,
+                            onRunningStateChanged = onTimerRunningChanged
                         )
                     }
                 }
@@ -3269,11 +3340,23 @@ fun RecipeCard(
 fun StepTimerWidget(
     timerKey: String,
     timerInfo: ParsedTimer,
-    isDarkTheme: Boolean
+    isDarkTheme: Boolean,
+    onRunningStateChanged: (Boolean) -> Unit
 ) {
     var timeLeft by remember(timerKey) { mutableIntStateOf(timerInfo.durationSeconds) }
     var isRunning by remember(timerKey) { mutableStateOf(false) }
     var isFinished by remember(timerKey) { mutableStateOf(false) }
+
+    DisposableEffect(isRunning) {
+        if (isRunning) {
+            onRunningStateChanged(true)
+        }
+        onDispose {
+            if (isRunning) {
+                onRunningStateChanged(false)
+            }
+        }
+    }
 
     LaunchedEffect(isRunning) {
         while (isRunning && timeLeft > 0) {
@@ -3364,7 +3447,7 @@ fun StepTimerWidget(
 }
 
 // =========================================================================
-// 12. ВЫСОКОСКОРОСТНОЙ РЕПОЗИТОРИЙ С ФОТОГРАФИЯМИ САМИХ БЛЮД И ДИСКОВЫМ КЭШЕМ
+// 12. ВЫСОКОСКОРОСТНОЙ РЕПОЗИТОРИЙ
 // =========================================================================
 object RecipeRepository {
     private val translationSemaphore = Semaphore(4)
@@ -3514,7 +3597,6 @@ object RecipeRepository {
         }
     }
 
-    // ИСПРАВЛЕНО: Вместо картинки сырого ингредиента (/images/ingredients/...) формируем 3 фотографии САМОГО ГОТОВОГО БЛЮДА!
     private suspend fun parseAndTranslateMealDbObject(
         detailObj: JSONObject,
         requestedCuisine: String,
@@ -3938,7 +4020,6 @@ object RecipeRepository {
         return exactMatches.take(count)
     }
 
-    // ИСПРАВЛЕНО: У всех блюд в карусели теперь по 2-3 реальных фотографии САМИХ ГОТОВЫХ БЛЮД (никаких иконок сырых продуктов!)
     private val CURATED_LOCAL_RECIPES = listOf(
         Recipe(
             id = "loc_borscht",
