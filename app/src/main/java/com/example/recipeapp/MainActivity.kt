@@ -64,6 +64,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -139,7 +140,7 @@ private val DarkCulinaryColorScheme = darkColorScheme(
 )
 
 // =========================================================================
-// 2. IMMUTABLE МОДЕЛИ ДАННЫХ
+// 2. IMMUTABLE МОДЕЛИ ДАННЫХ С ПРЕДВЫЧИСЛЕННЫМИ ПОЛЯМИ (ZERO-LAG SORTING)
 // =========================================================================
 @Immutable
 data class Recipe(
@@ -156,14 +157,15 @@ data class Recipe(
     val instructions: List<String>,
     val isCustom: Boolean = false
 ) {
-    val cookingMinutes: Int
-        get() {
-            val lower = cookingTime.lowercase()
-            val hours = Regex("(\\d+)\\s*ч").find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-            val mins = Regex("(\\d+)\\s*мин").find(lower)?.groupValues?.get(1)?.toIntOrNull()
-                ?: Regex("(\\d+)").find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 30
-            return hours * 60 + mins
-        }
+    // Вычисляются 1 раз при создании объекта, не нагружая процессор при скролле и поиске
+    val cookingMinutes: Int = CulinaryUtils.parseCookingMinutesOnce(cookingTime)
+    val searchIndexText: String = buildString {
+        append(title.lowercase()).append(' ')
+        append(description.lowercase()).append(' ')
+        append(cuisine.lowercase()).append(' ')
+        append(category.lowercase()).append(' ')
+        ingredients.forEach { append(it.lowercase()).append(' ') }
+    }
 
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -190,6 +192,11 @@ data class Recipe(
             val category = obj.optString("category", "Вторые блюда")
             val ingList = List(ings.length()) { ings.getString(it) }
             val rawDesc = obj.optString("description", "")
+            // Фильтруем старые ссылки на сырые ингредиенты, если они остались в сохраненных рецептах
+            val cleanImages = List(imgs.length()) { imgs.getString(it) }
+                .filter { !it.contains("/images/ingredients/", ignoreCase = true) }
+                .ifEmpty { CulinaryUtils.buildDishPhotoUrls(title, 1) }
+
             return Recipe(
                 id = obj.optString("id", "rec_${System.currentTimeMillis()}"),
                 title = title,
@@ -199,7 +206,7 @@ data class Recipe(
                 cookingTime = obj.optString("cookingTime", "30 мин"),
                 difficulty = obj.optString("difficulty", "Легко"),
                 calories = obj.optInt("calories", 250),
-                imageUrls = List(imgs.length()) { imgs.getString(it) },
+                imageUrls = cleanImages,
                 ingredients = ingList,
                 instructions = List(insts.length()) { insts.getString(it) },
                 isCustom = obj.optBoolean("isCustom", false)
@@ -242,10 +249,9 @@ enum class AppScreen {
 }
 
 // =========================================================================
-// 3. ИСПРАВЛЕННЫЙ МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С GITHUB RELEASES
+// 3. МЕНЕДЖЕР АВТООБНОВЛЕНИЯ С GITHUB RELEASES
 // =========================================================================
 object AppUpdateManager {
-    // Глобальный сигнал о конфликте подписи (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
     var signatureConflictState by mutableStateOf(false)
 
     fun getInstalledUpdateTimestamp(context: Context): Long {
@@ -275,7 +281,6 @@ object AppUpdateManager {
         }
     }
 
-    // ИСПРАВЛЕНО: Сравниваем время релиза на GitHub СТРОГО с реальным временем установленного пакета (installedTime)!
     suspend fun checkGitHubUpdate(context: Context, repoPath: String = DEFAULT_GITHUB_REPO): Result<GitHubReleaseInfo> =
         withContext(Dispatchers.IO) {
             val cleanRepo = repoPath
@@ -302,8 +307,8 @@ object AppUpdateManager {
                             setRequestProperty("Accept", "application/vnd.github+json")
                             setRequestProperty("User-Agent", "ChefRecipeApp-Updater")
                             setRequestProperty("Cache-Control", "no-cache")
-                            connectTimeout = 7000
-                            readTimeout = 7000
+                            connectTimeout = 6000
+                            readTimeout = 6000
                         }
                         if (conn.responseCode == 200) {
                             val body = conn.inputStream.bufferedReader().use { it.readText() }
@@ -339,7 +344,6 @@ object AppUpdateManager {
                                 String.format(Locale.US, "%.1f МБ", sizeBytes / (1024.0 * 1024.0))
                             } else "APK сборка"
 
-                            // Если сборка на GitHub новее установленного на телефоне APK хотя бы на 1 минуту — есть обновление!
                             val isNewer = remoteMillis > (installedTime + 60_000L)
 
                             return@withContext Result.success(
@@ -375,7 +379,6 @@ object AppUpdateManager {
             )
         }
 
-    // Сохраняем копию APK также в системную папку "Загрузки" (Downloads), чтобы файл не удалялся при переустановке!
     private fun copyApkToPublicDownloads(context: Context, sourceFile: File) {
         try {
             val fileName = "ChefRecipeApp_latest.apk"
@@ -444,7 +447,7 @@ object AppUpdateManager {
 
             conn.inputStream.use { input ->
                 FileOutputStream(apkFile).use { output ->
-                    val buffer = ByteArray(16 * 1024)
+                    val buffer = ByteArray(32 * 1024)
                     var downloaded = 0L
                     var read: Int
                     while (input.read(buffer).also { read = it } != -1) {
@@ -459,7 +462,6 @@ object AppUpdateManager {
             }
             conn.disconnect()
 
-            // Сохраняем резервную копию в папку Downloads телефона
             copyApkToPublicDownloads(context, apkFile)
 
             withContext(Dispatchers.Main) {
@@ -491,15 +493,23 @@ object AppUpdateManager {
             return
         }
 
+        var session: PackageInstaller.Session? = null
         try {
             val packageInstaller = context.packageManager.packageInstaller
+            // Очищаем возможные старые незавершенные сессии, чтобы не блокировать установщик
+            try {
+                for (oldSession in packageInstaller.mySessions) {
+                    packageInstaller.abandonSession(oldSession.sessionId)
+                }
+            } catch (_: Exception) {}
+
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
             val sessionId = packageInstaller.createSession(params)
-            val session = packageInstaller.openSession(sessionId)
+            session = packageInstaller.openSession(sessionId)
 
             apkFile.inputStream().use { input ->
-                session.openWrite("ChefRecipeApp_update", 0, apkFile.length()).use { output ->
-                    input.copyTo(output)
+                session.openWrite("ChefRecipeApp_update.apk", 0, apkFile.length()).use { output ->
+                    input.copyTo(output, bufferSize = 32 * 1024)
                     session.fsync(output)
                 }
             }
@@ -514,15 +524,18 @@ object AppUpdateManager {
             }
             val pendingIntent = PendingIntent.getActivity(context, sessionId, callbackIntent, flags)
             session.commit(pendingIntent.intentSender)
-            session.close()
         } catch (e: Exception) {
             Toast.makeText(context, "Ошибка запуска установщика: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+        } finally {
+            try {
+                session?.close()
+            } catch (_: Exception) {}
         }
     }
 }
 
 // =========================================================================
-// 4. КУЛИНАРНЫЕ УТИЛИТЫ, ГЕНЕРАТОР ОПИСАНИЙ И ПЕРЕВОДЧИК
+// 4. ОПТИМИЗИРОВАННЫЕ КУЛИНАРНЫЕ УТИЛИТЫ И ГЕНЕРАТОР ФОТО ГОТОВЫХ БЛЮД
 // =========================================================================
 object CulinaryUtils {
     val CUISINES = listOf(
@@ -531,6 +544,41 @@ object CulinaryUtils {
     )
     val CATEGORIES = listOf("Все", "Супы", "Каши и завтраки", "Вторые блюда", "Выпечка", "Что-то к чаю", "Салаты", "Паста и пицца")
     val QUICK_FRIDGE = listOf("Курица", "Яйца", "Картофель", "Сыр", "Томаты", "Молоко", "Рис", "Фарш", "Творог", "Капуста", "Грибы")
+
+    private val HOURS_REGEX = Regex("(\\d+)\\s*ч")
+    private val MINS_REGEX = Regex("(\\d+)\\s*мин")
+    private val ANY_DIGIT_REGEX = Regex("(\\d+)")
+    private val TIMER_REGEX = Regex("(\\d+)\\s*(мин(?:ут[а-хей]?)?|час(?:[а-ов]?)?|сек(?:унд[а-хей]?)?)", RegexOption.IGNORE_CASE)
+    private val NUMBER_REGEX = Regex("(\\d+(?:[.,]\\d+)?)")
+    private val STEP_SPLIT_REGEX = Regex("(?=\\b\\d+\\.)|\\r?\\n")
+    private val STEP_PREFIX_REGEX = Regex("^\\d+[.)]\\s*")
+    private val SENTENCE_SPLIT_REGEX = Regex("(?<=[.!?])\\s+")
+    private val LATIN_REGEX = Regex("[a-zA-Z]{2,}")
+    private val NON_WORD_REGEX = Regex("[^а-яёa-z\\s-]")
+    private val WHITESPACE_REGEX = Regex("\\s+")
+
+    fun parseCookingMinutesOnce(cookingTime: String): Int {
+        val lower = cookingTime.lowercase()
+        val hours = HOURS_REGEX.find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        val mins = MINS_REGEX.find(lower)?.groupValues?.get(1)?.toIntOrNull()
+            ?: ANY_DIGIT_REGEX.find(lower)?.groupValues?.get(1)?.toIntOrNull() ?: 30
+        return hours * 60 + mins
+    }
+
+    // Генерация 2-3 фотографий ИМЕННО ГОТОВОГО БЛЮДА с разных ракурсов (никаких фото сырых ингредиентов!)
+    fun buildDishPhotoUrls(dishNameForPrompt: String, seedBase: Int, primaryThumbUrl: String? = null): List<String> {
+        val cleanName = dishNameForPrompt.replace(Regex("[^a-zA-Zа-яА-ЯёЁ0-9\\s]"), " ").trim()
+        val encoded = URLEncoder.encode(cleanName.ifEmpty { "cooked dish" }, "UTF-8").replace("+", "%20")
+        val angle1 = "https://image.pollinations.ai/prompt/$encoded%20cooked%20dish%20plated%20restaurant%20food%20photography?width=600&height=400&nologo=true&seed=${seedBase + 11}"
+        val angle2 = "https://image.pollinations.ai/prompt/$encoded%20delicious%20prepared%20meal%20overhead%20closeup%20serving?width=600&height=400&nologo=true&seed=${seedBase + 55}"
+        val angle3 = "https://image.pollinations.ai/prompt/$encoded%20traditional%20cooked%20food%20on%20table%20gourmet?width=600&height=400&nologo=true&seed=${seedBase + 99}"
+
+        return if (!primaryThumbUrl.isNullOrBlank()) {
+            listOf(primaryThumbUrl, angle1, angle2)
+        } else {
+            listOf(angle1, angle2, angle3)
+        }
+    }
 
     private val AREA_TO_RUSSIAN_CUISINE = mapOf(
         "russian" to "Русская", "korean" to "Корейская", "french" to "Французская",
@@ -645,15 +693,6 @@ object CulinaryUtils {
         val flag = CUISINE_FLAGS[cuisine] ?: "🌍"
         return "$flag $cuisine"
     }
-
-    private val TIMER_REGEX = Regex("(\\d+)\\s*(мин(?:ут[а-хей]?)?|час(?:[а-ов]?)?|сек(?:унд[а-хей]?)?)", RegexOption.IGNORE_CASE)
-    private val NUMBER_REGEX = Regex("(\\d+(?:[.,]\\d+)?)")
-    private val STEP_SPLIT_REGEX = Regex("(?=\\b\\d+\\.)|\\r?\\n")
-    private val STEP_PREFIX_REGEX = Regex("^\\d+[.)]\\s*")
-    private val SENTENCE_SPLIT_REGEX = Regex("(?<=[.!?])\\s+")
-    private val LATIN_REGEX = Regex("[a-zA-Z]{2,}")
-    private val NON_WORD_REGEX = Regex("[^а-яёa-z\\s-]")
-    private val WHITESPACE_REGEX = Regex("\\s+")
 
     private val SPEECH_REPLACEMENTS = listOf(
         Regex("(\\d+)\\s*-\\s*(\\d+)") to "$1 или $2",
@@ -894,19 +933,28 @@ object CulinaryUtils {
         return res
     }
 
-    fun isIngredientInFridge(recipeIngredient: String, fridgeItems: List<String>): Boolean {
-        if (fridgeItems.isEmpty()) return false
-        val cleanRecipeIng = recipeIngredient.lowercase()
-        return fridgeItems.any { fridgeItem ->
-            val cleanFridge = fridgeItem.trim().lowercase()
-            if (cleanFridge.isEmpty()) return@any false
-            val stem = when {
-                cleanFridge.length >= 5 -> cleanFridge.dropLast(2)
-                cleanFridge.length == 4 -> cleanFridge.dropLast(1)
-                else -> cleanFridge
+    // Быстрое предвычисление корней продуктов холодильника для мгновенной проверки
+    fun computeFridgeStems(fridgeItems: List<String>): Set<String> {
+        if (fridgeItems.isEmpty()) return emptySet()
+        return fridgeItems.mapNotNull { item ->
+            val clean = item.trim().lowercase()
+            if (clean.isEmpty()) null
+            else when {
+                clean.length >= 5 -> clean.dropLast(2)
+                clean.length == 4 -> clean.dropLast(1)
+                else -> clean
             }
-            cleanRecipeIng.contains(stem)
-        }
+        }.toSet()
+    }
+
+    fun isIngredientMatchingStems(recipeIngredient: String, fridgeStems: Set<String>): Boolean {
+        if (fridgeStems.isEmpty()) return false
+        val lowerIng = recipeIngredient.lowercase()
+        return fridgeStems.any { lowerIng.contains(it) }
+    }
+
+    fun isIngredientInFridge(recipeIngredient: String, fridgeItems: List<String>): Boolean {
+        return isIngredientMatchingStems(recipeIngredient, computeFridgeStems(fridgeItems))
     }
 
     fun scaleIngredientAmount(ingredient: String, portions: Int, basePortions: Int = 2): String {
@@ -1020,20 +1068,41 @@ object CulinaryUtils {
         return Triple(newCuisine, newCategory, extracted)
     }
 
+    // ИСПРАВЛЕНО: Освобождаем ToneGenerator через Handler после сигнала, чтобы не забивать аудиоканал
     fun playAlarmSound() {
         try {
             val toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100)
             toneGen.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 1500)
+            Handler(Looper.getMainLooper()).postDelayed({
+                try {
+                    toneGen.release()
+                } catch (_: Exception) {}
+            }, 1600L)
         } catch (_: Exception) {}
     }
 }
 
 // =========================================================================
-// 5. АСИНХРОННЫЙ МЕНЕДЖЕР ХРАНИЛИЩА
+// 5. АСИНХРОННЫЙ МЕНЕДЖЕР ХРАНИЛИЩА + ДИСКОВЫЙ КЭШ ПЕРЕВОДОВ
 // =========================================================================
 class RecipeStorage(context: Context) {
-    private val prefs = context.getSharedPreferences("chef_app_v9_storage", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("chef_app_v10_storage", Context.MODE_PRIVATE)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        // Загружаем сохраненный кэш переводов в память при старте для мгновенного открытия блюд
+        val cachedTransJson = prefs.getString("translation_cache_json", null)
+        if (!cachedTransJson.isNullOrBlank()) {
+            try {
+                val obj = JSONObject(cachedTransJson)
+                val keys = obj.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    RecipeRepository.putCachedTranslation(k, obj.getString(k))
+                }
+            } catch (_: Exception) {}
+        }
+    }
 
     fun isDarkTheme(systemDefault: Boolean): Boolean =
         if (prefs.contains("dark_mode")) prefs.getBoolean("dark_mode", systemDefault) else systemDefault
@@ -1076,11 +1145,13 @@ class RecipeStorage(context: Context) {
         ioScope.launch {
             val favArr = JSONArray().apply { favCopy.forEach { put(it.toJson()) } }
             val customArr = JSONArray().apply { customCopy.forEach { put(it.toJson()) } }
+            val transObj = JSONObject(RecipeRepository.exportTranslationCacheSnapshot())
             prefs.edit()
                 .putStringSet("fridge", fridgeCopy)
                 .putStringSet("cart", cartCopy)
                 .putString("fav_recipes_json", favArr.toString())
                 .putString("custom_recipes_json", customArr.toString())
+                .putString("translation_cache_json", transObj.toString())
                 .apply()
         }
     }
@@ -1261,7 +1332,7 @@ class SpeechManager(
 }
 
 // =========================================================================
-// 7. ACTIVITY И ОБРАБОТЧИК УСТАНОВКИ ОБНОВЛЕНИЙ APK (С ЗАЩИТОЙ ОТ КОНФЛИКТА ПОДПИСИ)
+// 7. ACTIVITY И ОБРАБОТЧИК УСТАНОВКИ ОБНОВЛЕНИЙ APK
 // =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1383,6 +1454,17 @@ fun RecipeAppScreen(
     val favoriteRecipes = remember { mutableStateListOf<Recipe>().apply { addAll(storage.loadRecipeList("fav_recipes_json")) } }
     val customUserRecipes = remember { mutableStateListOf<Recipe>().apply { addAll(storage.loadRecipeList("custom_recipes_json")) } }
 
+    // Мемоизированные множества для мгновенной отрисовки карточек без тормозов
+    val fridgeStemsSet by remember {
+        derivedStateOf { CulinaryUtils.computeFridgeStems(fridgeItems) }
+    }
+    val shoppingItemsSet by remember {
+        derivedStateOf { shoppingListItems.toSet() }
+    }
+    val favoriteIdsSet by remember {
+        derivedStateOf { favoriteRecipes.map { it.id }.toSet() }
+    }
+
     fun persistAll() {
         storage.saveAllAsync(fridgeItems, shoppingListItems, favoriteRecipes, customUserRecipes)
     }
@@ -1468,6 +1550,7 @@ fun RecipeAppScreen(
                         )
                     }
                 }
+                persistAll() // Сохраняем свежие переводы в дисковый кэш
             } catch (_: Exception) {
                 recipes = RecipeRepository.buildLocalDatabaseRecipes(
                     cuisineToUse, categoryToUse, currentFridge, currentCustom, targetCount, currentSeed
@@ -1485,7 +1568,7 @@ fun RecipeAppScreen(
             isSearchingOnline = false
             return@LaunchedEffect
         }
-        delay(450L)
+        delay(400L)
         isSearchingOnline = true
         try {
             onlineSearchResults = RecipeRepository.searchGlobalOnlineRecipes(q)
@@ -1556,6 +1639,7 @@ fun RecipeAppScreen(
         }
     }
 
+    // Мгновенная фильтрация по предвычисленному индексу searchIndexText
     val displayedRecipes by remember(
         recipes,
         showOnlyFavorites,
@@ -1564,10 +1648,9 @@ fun RecipeAppScreen(
         searchQuery,
         onlineSearchResults,
         selectedSort,
-        fridgeItems.size
+        fridgeStemsSet
     ) {
         derivedStateOf {
-            val currentFridge = fridgeItems.toList()
             val q = searchQuery.trim()
             val searched = if (q.isEmpty()) {
                 if (showOnlyFavorites) favoriteRecipes.toList() else recipes
@@ -1582,20 +1665,14 @@ fun RecipeAppScreen(
                 ).distinctBy { it.title.lowercase() }
 
                 val qStem = if (q.length >= 5) q.dropLast(1).lowercase() else q.lowercase()
-                globalPool.filter { r ->
-                    r.title.lowercase().contains(qStem) ||
-                    r.description.lowercase().contains(qStem) ||
-                    r.cuisine.lowercase().contains(qStem) ||
-                    r.category.lowercase().contains(qStem) ||
-                    r.ingredients.any { ing -> ing.lowercase().contains(qStem) }
-                }
+                globalPool.filter { r -> r.searchIndexText.contains(qStem) }
             }
 
             when (selectedSort) {
                 SortOrder.FRESH_BATCH -> searched
                 SortOrder.FRIDGE_MATCH -> searched.sortedWith(
                     compareByDescending<Recipe> { it.isCustom }
-                        .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientInFridge(it, currentFridge) } }
+                        .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientMatchingStems(it, fridgeStemsSet) } }
                 )
                 SortOrder.FASTEST -> searched.sortedBy { it.cookingMinutes }
                 SortOrder.LOW_CALORIE -> searched.sortedBy { it.calories }
@@ -1603,7 +1680,6 @@ fun RecipeAppScreen(
         }
     }
 
-    // Окно автоматического решения конфликта подписи (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
     if (AppUpdateManager.signatureConflictState) {
         AlertDialog(
             onDismissRequest = { AppUpdateManager.signatureConflictState = false },
@@ -1650,7 +1726,6 @@ fun RecipeAppScreen(
         )
     }
 
-    // Модальное окно проверки и установки обновления с GitHub
     if (showUpdateDialog) {
         val installedTimeMillis = remember(showUpdateDialog) {
             AppUpdateManager.getInstalledUpdateTimestamp(context)
@@ -2292,13 +2367,13 @@ fun RecipeAppScreen(
                             items = displayedRecipes,
                             key = { _, item -> item.id }
                         ) { index, recipe ->
-                            val isFav = favoriteRecipes.any { it.id == recipe.id || it.title == recipe.title }
+                            val isFav = favoriteIdsSet.contains(recipe.id)
                             RecipeCard(
                                 index = index + 1,
                                 recipe = recipe,
                                 isDarkTheme = isDarkTheme,
-                                fridgeItems = fridgeItems.toList(),
-                                shoppingListItems = shoppingListItems,
+                                fridgeStems = fridgeStemsSet,
+                                shoppingSet = shoppingItemsSet,
                                 isFavorite = isFav,
                                 currentlySpeakingId = currentlySpeakingId,
                                 onSpeakText = { utteranceId, text -> speechManager.speak(utteranceId, text) },
@@ -2523,15 +2598,11 @@ fun AddCustomRecipeView(
                 val finalDesc = if (description.isNotBlank()) description.trim()
                 else CulinaryUtils.buildDishDescription(title.trim(), selectedCuisine, selectedCategory, parsedIngs)
 
-                val encodedTitle = URLEncoder.encode(title.trim(), "UTF-8").replace("+", "%20")
-                val autoImg1 = "https://image.pollinations.ai/prompt/$encodedTitle%20delicious%20dish%20food%20photography?width=600&height=400&nologo=true&seed=10"
-                val autoImg2 = "https://image.pollinations.ai/prompt/$encodedTitle%20closeup%20home%20cooking?width=600&height=400&nologo=true&seed=20"
-
-                val imgs = if (customImageUrl.isNotBlank()) {
-                    listOf(customImageUrl.trim(), autoImg1)
-                } else {
-                    listOf(autoImg1, autoImg2)
-                }
+                val imgs = CulinaryUtils.buildDishPhotoUrls(
+                    dishNameForPrompt = title.trim(),
+                    seedBase = 10,
+                    primaryThumbUrl = customImageUrl.trim().takeIf { it.isNotEmpty() }
+                )
 
                 val newRecipe = Recipe(
                     id = "custom_${System.currentTimeMillis()}",
@@ -2727,7 +2798,7 @@ fun ShoppingListView(
 }
 
 // =========================================================================
-// 11. КАРТОЧКА РЕЦЕПТА С ОПИСАНИЕМ И ОТПРАВКОЙ РЕЦЕПТА
+// 11. ОПТИМИЗИРОВАННАЯ КАРТОЧКА РЕЦЕПТА С КАРУСЕЛЬЮ ФОТО САМИХ БЛЮД
 // =========================================================================
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -2735,8 +2806,8 @@ fun RecipeCard(
     index: Int,
     recipe: Recipe,
     isDarkTheme: Boolean,
-    fridgeItems: List<String>,
-    shoppingListItems: List<String>,
+    fridgeStems: Set<String>,
+    shoppingSet: Set<String>,
     isFavorite: Boolean,
     currentlySpeakingId: String?,
     onSpeakText: (String, String) -> Unit,
@@ -2753,17 +2824,17 @@ fun RecipeCard(
         CulinaryUtils.ensureValidInstructions(recipe.instructions, recipe.title, recipe.ingredients)
     }
 
-    val checkedIngredients = remember(recipe.id, fridgeItems, portions) {
+    val checkedIngredients = remember(recipe.id, fridgeStems, portions) {
         mutableStateListOf<String>().apply {
             scaledIngredients.forEach { ing ->
-                if (CulinaryUtils.isIngredientInFridge(ing, fridgeItems)) add(ing)
+                if (CulinaryUtils.isIngredientMatchingStems(ing, fridgeStems)) add(ing)
             }
         }
     }
     val completedSteps = remember(recipe.id) { mutableStateListOf<Int>() }
 
     val missingIngredients = scaledIngredients.filter { !checkedIngredients.contains(it) }
-    val matchedCount = scaledIngredients.count { CulinaryUtils.isIngredientInFridge(it, fridgeItems) }
+    val matchedCount = scaledIngredients.count { CulinaryUtils.isIngredientMatchingStems(it, fridgeStems) }
     val needToBuyCount = (scaledIngredients.size - matchedCount).coerceAtLeast(0)
     val fullRecipeUtteranceId = "full_${recipe.id}"
     val isSpeakingFullRecipe = currentlySpeakingId == fullRecipeUtteranceId
@@ -2955,7 +3026,7 @@ fun RecipeCard(
                 )
             }
 
-            if (fridgeItems.isNotEmpty()) {
+            if (fridgeStems.isNotEmpty()) {
                 Surface(
                     color = badgeBgColor,
                     shape = RoundedCornerShape(8.dp),
@@ -2976,17 +3047,22 @@ fun RecipeCard(
 
             Spacer(modifier = Modifier.height(8.dp))
 
+            // Карусель ТОЛЬКО фотографий готовых блюд с агрессивным кэшированием в RAM и на диск
             val safeImages = recipe.imageUrls.ifEmpty {
                 listOf("https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg")
             }
             val pagerState = rememberPagerState(pageCount = { safeImages.size })
 
-            Box(modifier = Modifier.fillMaxWidth().height(195.dp)) {
+            Box(modifier = Modifier.fillMaxWidth().height(200.dp)) {
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
-                    val imgReq = remember(safeImages[page]) {
+                    val imgUrl = safeImages[page]
+                    val imgReq = remember(imgUrl) {
                         ImageRequest.Builder(context)
-                            .data(safeImages[page])
+                            .data(imgUrl)
+                            .size(600, 400)
                             .crossfade(true)
+                            .memoryCachePolicy(CachePolicy.ENABLED)
+                            .diskCachePolicy(CachePolicy.ENABLED)
                             .build()
                     }
                     AsyncImage(
@@ -3059,8 +3135,8 @@ fun RecipeCard(
 
             scaledIngredients.forEach { ingredient ->
                 val isChecked = checkedIngredients.contains(ingredient)
-                val inFridge = CulinaryUtils.isIngredientInFridge(ingredient, fridgeItems)
-                val inCart = shoppingListItems.contains(ingredient)
+                val inFridge = CulinaryUtils.isIngredientMatchingStems(ingredient, fridgeStems)
+                val inCart = shoppingSet.contains(ingredient)
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -3288,7 +3364,7 @@ fun StepTimerWidget(
 }
 
 // =========================================================================
-// 12. РЕПОЗИТОРИЙ СО СТРОГИМ ФИЛЬТРОМ КУХНИ И ГЛОБАЛЬНЫМ ПОИСКОМ
+// 12. ВЫСОКОСКОРОСТНОЙ РЕПОЗИТОРИЙ С ФОТОГРАФИЯМИ САМИХ БЛЮД И ДИСКОВЫМ КЭШЕМ
 // =========================================================================
 object RecipeRepository {
     private val translationSemaphore = Semaphore(4)
@@ -3302,7 +3378,15 @@ object RecipeRepository {
     fun getAllCuratedRecipes(): List<Recipe> = CURATED_LOCAL_RECIPES
     fun getCachedOnlineRecipes(): List<Recipe> = mealDbDetailCache.values.toList()
 
-    private fun httpGet(urlStr: String, timeoutMs: Int = 6000): String {
+    fun putCachedTranslation(key: String, value: String) {
+        translationCache[key] = value
+    }
+
+    fun exportTranslationCacheSnapshot(): Map<String, String> {
+        return translationCache.entries.take(350).associate { it.key to it.value }
+    }
+
+    private fun httpGet(urlStr: String, timeoutMs: Int = 5500): String {
         val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             setRequestProperty("User-Agent", "Mozilla/5.0")
@@ -3356,8 +3440,8 @@ object RecipeRepository {
                 doOutput = true
                 setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                 setRequestProperty("User-Agent", "Mozilla/5.0")
-                connectTimeout = 5000
-                readTimeout = 5000
+                connectTimeout = 4500
+                readTimeout = 4500
             }
             val response = try {
                 OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write("q=$encoded") }
@@ -3381,7 +3465,7 @@ object RecipeRepository {
 
         try {
             val encoded = URLEncoder.encode(preCleaned.take(800), "UTF-8")
-            val response = httpGet("https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=ru&q=$encoded", 4500)
+            val response = httpGet("https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=ru&q=$encoded", 4000)
             val arr = JSONArray(response)
             val first = arr.optString(0)
             if (first.isNotBlank()) {
@@ -3430,6 +3514,7 @@ object RecipeRepository {
         }
     }
 
+    // ИСПРАВЛЕНО: Вместо картинки сырого ингредиента (/images/ingredients/...) формируем 3 фотографии САМОГО ГОТОВОГО БЛЮДА!
     private suspend fun parseAndTranslateMealDbObject(
         detailObj: JSONObject,
         requestedCuisine: String,
@@ -3446,12 +3531,10 @@ object RecipeRepository {
             val enInstructions = detailObj.optString("strInstructions", "")
 
             val rawIngredients = mutableListOf<String>()
-            var firstIngNameEn = "Chicken"
             for (idx in 1..15) {
                 val ing = detailObj.optString("strIngredient$idx", "").trim()
                 val measure = detailObj.optString("strMeasure$idx", "").trim()
                 if (ing.isNotEmpty() && ing != "null") {
-                    if (idx == 1) firstIngNameEn = ing
                     val cleanMeasure = if (measure.isNotEmpty() && measure != "null") " — $measure" else ""
                     rawIngredients.add(CulinaryUtils.normalizeAndTranslateCulinary("$ing$cleanMeasure"))
                 }
@@ -3485,8 +3568,11 @@ object RecipeRepository {
             val dishDesc = CulinaryUtils.buildDishDescription(ruTitle, realRussianCuisine, realRussianCategory, ruIngredients)
 
             val mainPhoto = detailObj.optString("strMealThumb", "")
-            val encodedIng = URLEncoder.encode(firstIngNameEn, "UTF-8").replace("+", "%20")
-            val ingPhoto = "https://www.themealdb.com/images/ingredients/$encodedIng.png"
+            val dishPhotos = CulinaryUtils.buildDishPhotoUrls(
+                dishNameForPrompt = enTitle,
+                seedBase = mealId.hashCode() and 0x7FFF,
+                primaryThumbUrl = mainPhoto
+            )
 
             val built = Recipe(
                 id = "mealdb_$mealId",
@@ -3497,7 +3583,7 @@ object RecipeRepository {
                 cookingTime = "${25 + (indexHint * 5) % 35} мин",
                 difficulty = "Средне",
                 calories = 220 + (indexHint * 25) % 180,
-                imageUrls = listOf(mainPhoto, ingPhoto).filter { it.isNotBlank() },
+                imageUrls = dishPhotos,
                 ingredients = ruIngredients,
                 instructions = finalSteps
             )
@@ -3608,10 +3694,10 @@ object RecipeRepository {
                     recentlyShownAiTitles.add(ruTitle)
 
                     val engDish = obj.optString("englishName", ruTitle)
-                    val encodedPhoto = URLEncoder.encode(engDish, "UTF-8").replace("+", "%20")
-
-                    val img1 = "https://image.pollinations.ai/prompt/$encodedPhoto%20appetizing%20dish%20food%20photography?width=600&height=400&nologo=true&seed=${refreshSeed * 100 + i + 11}"
-                    val img2 = "https://image.pollinations.ai/prompt/$encodedPhoto%20restaurant%20serving%20closeup?width=600&height=400&nologo=true&seed=${refreshSeed * 100 + i + 77}"
+                    val dishPhotos = CulinaryUtils.buildDishPhotoUrls(
+                        dishNameForPrompt = engDish,
+                        seedBase = refreshSeed * 100 + i * 17
+                    )
 
                     val ingArr = obj.optJSONArray("ingredients") ?: JSONArray()
                     val ingList = List(ingArr.length()) { translateEnToRu(ingArr.getString(it)) }
@@ -3644,7 +3730,7 @@ object RecipeRepository {
                             cookingTime = CulinaryUtils.normalizeAndTranslateCulinary(obj.optString("cookingTime", "35 мин")),
                             difficulty = translateEnToRu(obj.optString("difficulty", "Средне")),
                             calories = obj.optInt("calories", 250),
-                            imageUrls = listOf(img1, img2),
+                            imageUrls = dishPhotos,
                             ingredients = ingList,
                             instructions = stepsList
                         )
@@ -3711,7 +3797,7 @@ object RecipeRepository {
                     "https://www.themealdb.com/api/json/v1/1/search.php?s=$rotatedLetter"
             }
 
-            val listResponse = httpGet(endpointUrl, 6000)
+            val listResponse = httpGet(endpointUrl, 5500)
             val mealsArray = JSONObject(listResponse).optJSONArray("meals")
 
             if (mealsArray != null && mealsArray.length() > 0) {
@@ -3743,7 +3829,7 @@ object RecipeRepository {
                             val detailObj = if (mealSummary.has("strInstructions") && mealSummary.has("strArea")) {
                                 mealSummary
                             } else {
-                                val detailResponse = httpGet("https://www.themealdb.com/api/json/v1/1/lookup.php?i=$mealId", 6000)
+                                val detailResponse = httpGet("https://www.themealdb.com/api/json/v1/1/lookup.php?i=$mealId", 5500)
                                 JSONObject(detailResponse).getJSONArray("meals").getJSONObject(0)
                             }
                             parseAndTranslateMealDbObject(detailObj, cuisine, category, i)
@@ -3781,6 +3867,7 @@ object RecipeRepository {
         val randomForBatch = Random(refreshSeed * 31 + 7)
         val shuffledPool = CURATED_LOCAL_RECIPES.shuffled(randomForBatch)
         val allRecipes = customRecipes + shuffledPool
+        val fridgeStems = CulinaryUtils.computeFridgeStems(fridgeItems)
 
         val exactMatches = allRecipes.filter { r ->
             (cuisine == "Все" || r.cuisine.equals(cuisine, ignoreCase = true)) &&
@@ -3820,10 +3907,10 @@ object RecipeRepository {
             exactMatches.addAll(rotated)
         }
 
-        if (fridgeItems.isNotEmpty()) {
+        if (fridgeStems.isNotEmpty()) {
             exactMatches.sortWith(
                 compareByDescending<Recipe> { it.isCustom }
-                    .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientInFridge(it, fridgeItems) } }
+                    .thenByDescending { r -> r.ingredients.count { CulinaryUtils.isIngredientMatchingStems(it, fridgeStems) } }
             )
         }
 
@@ -3851,6 +3938,7 @@ object RecipeRepository {
         return exactMatches.take(count)
     }
 
+    // ИСПРАВЛЕНО: У всех блюд в карусели теперь по 2-3 реальных фотографии САМИХ ГОТОВЫХ БЛЮД (никаких иконок сырых продуктов!)
     private val CURATED_LOCAL_RECIPES = listOf(
         Recipe(
             id = "loc_borscht",
@@ -3863,7 +3951,8 @@ object RecipeRepository {
             calories = 135,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/vvstvq1487342592.jpg",
-                "https://www.themealdb.com/images/ingredients/Beetroot.png"
+                "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600",
+                "https://images.unsplash.com/photo-1603105037880-880cd4edfb0d?w=600"
             ),
             ingredients = listOf("Говядина на кости - 500 г", "Свекла - 2 шт.", "Капуста белокочанная - 300 г", "Картофель - 4 шт.", "Томатная паста - 2 ст.л.", "Сметана - 3 ст.л."),
             instructions = listOf(
@@ -3884,7 +3973,8 @@ object RecipeRepository {
             calories = 240,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/sypxpx1515365095.jpg",
-                "https://www.themealdb.com/images/ingredients/Chicken.png"
+                "https://images.unsplash.com/photo-1512058564366-18510be2db19?w=600",
+                "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?w=600"
             ),
             ingredients = listOf("Курица (филе или бедра) - 500 г", "Рис длиннозерный - 250 г", "Морковь - 1 шт.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Масло растительное - 2 ст.л."),
             instructions = listOf(
@@ -3905,7 +3995,8 @@ object RecipeRepository {
             calories = 380,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/tqtywx1468317395.jpg",
-                "https://www.themealdb.com/images/media/meals/qxutws1486978099.jpg"
+                "https://www.themealdb.com/images/media/meals/qxutws1486978099.jpg",
+                "https://images.unsplash.com/photo-1578985545062-69928b1d9587?w=600"
             ),
             ingredients = listOf("Печенье песочное - 400 г", "Вареная сгущенка (соленая карамель) - 250 г", "Сливочное масло - 100 г", "Какао-порошок - 4 ст.л."),
             instructions = listOf(
@@ -3926,7 +4017,8 @@ object RecipeRepository {
             calories = 220,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/rwuyqx1511383174.jpg",
-                "https://www.themealdb.com/images/media/meals/sywswr1511383814.jpg"
+                "https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=600",
+                "https://images.unsplash.com/photo-1528207776546-365bb710ee93?w=600"
             ),
             ingredients = listOf("Творог 9% - 400 г", "Яйца - 1 шт.", "Мука пшеничная или рисовая - 3 ст.л.", "Сахар - 2 ст.л.", "Сметана - 3 ст.л."),
             instructions = listOf(
@@ -3946,7 +4038,8 @@ object RecipeRepository {
             calories = 265,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/svprys1511176755.jpg",
-                "https://www.themealdb.com/images/ingredients/Mushrooms.png"
+                "https://www.themealdb.com/images/media/meals/ursuup1487348423.jpg",
+                "https://images.unsplash.com/photo-1544025162-d76694265947?w=600"
             ),
             ingredients = listOf("Говядина (вырезка) - 500 г", "Грибы шампиньоны - 250 г", "Сметана 20% - 200 г", "Лук репчатый - 2 шт.", "Мука - 1 ст.л."),
             instructions = listOf(
@@ -3967,7 +4060,8 @@ object RecipeRepository {
             calories = 250,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/qtqvys1468573168.jpg",
-                "https://www.themealdb.com/images/media/meals/xvsurr1511719182.jpg"
+                "https://www.themealdb.com/images/media/meals/xvsurr1511719182.jpg",
+                "https://images.unsplash.com/photo-1568571780765-9276ac8b75a2?w=600"
             ),
             ingredients = listOf("Яблоки кисло-сладкие - 4 шт.", "Яйца - 4 шт.", "Сахар - 150 г", "Мука - 160 г", "Корица молотая - 1 ч.л."),
             instructions = listOf(
@@ -3987,7 +4081,8 @@ object RecipeRepository {
             calories = 195,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/1549542994.jpg",
-                "https://www.themealdb.com/images/ingredients/Potatoes.png"
+                "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600",
+                "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600"
             ),
             ingredients = listOf("Курица отварная - 300 г", "Картофель - 3 шт.", "Яйца - 3 шт.", "Морковь - 1 шт.", "Огурцы маринованные - 3 шт.", "Горошек зеленый - 150 г"),
             instructions = listOf(
@@ -4007,7 +4102,8 @@ object RecipeRepository {
             calories = 190,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/1529446352.jpg",
-                "https://www.themealdb.com/images/ingredients/Tofu.png"
+                "https://images.unsplash.com/photo-1583224964978-2257b960c3d3?w=600",
+                "https://images.unsplash.com/photo-1553163147-622ab57be1c7?w=600"
             ),
             ingredients = listOf("Капуста кимчи - 300 г", "Свинина или курица - 250 г", "Сыр тофу - 150 г", "Яйца - 1 шт.", "Лук зеленый - 1 пучок"),
             instructions = listOf(
@@ -4027,7 +4123,8 @@ object RecipeRepository {
             calories = 310,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/1529444830.jpg",
-                "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"
+                "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg",
+                "https://images.unsplash.com/photo-1562967914-608f82629710?w=600"
             ),
             ingredients = listOf("Курица (филе или крылышки) - 600 г", "Крахмал кукурузный - 4 ст.л.", "Чеснок - 3 зубчика", "Томатный соус - 3 ст.л.", "Мед - 2 ст.л.", "Кунжут - 1 ст.л."),
             instructions = listOf(
@@ -4047,7 +4144,8 @@ object RecipeRepository {
             calories = 275,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/z0ageb1583189517.jpg",
-                "https://www.themealdb.com/images/ingredients/Rice.png"
+                "https://images.unsplash.com/photo-1553163147-622ab57be1c7?w=600",
+                "https://images.unsplash.com/photo-1590301157890-4810ed352733?w=600"
             ),
             ingredients = listOf("Рис круглозерный - 250 г", "Фарш говяжий - 250 г", "Яйца - 2 шт.", "Морковь - 1 шт.", "Огурец - 1 шт.", "Соевый соус - 2 ст.л."),
             instructions = listOf(
@@ -4067,7 +4165,8 @@ object RecipeRepository {
             calories = 260,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/1529443236.jpg",
-                "https://www.themealdb.com/images/ingredients/Beef.png"
+                "https://www.themealdb.com/images/media/meals/1529444113.jpg",
+                "https://images.unsplash.com/photo-1544025162-d76694265947?w=600"
             ),
             ingredients = listOf("Говядина - 500 г", "Соевый соус - 4 ст.л.", "Лук репчатый - 1 шт.", "Чеснок - 3 зубчика", "Сахар или мед - 1 ст.л.", "Кунжут - 1 ст.л."),
             instructions = listOf(
@@ -4086,8 +4185,8 @@ object RecipeRepository {
             difficulty = "Легко",
             calories = 145,
             imageUrls = listOf(
-                "https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg",
-                "https://www.themealdb.com/images/ingredients/Carrots.png"
+                "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600",
+                "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600"
             ),
             ingredients = listOf("Морковь сочная - 500 г", "Чеснок - 4 зубчика", "Масло растительное - 4 ст.л.", "Уксус яблочный - 2 ст.л.", "Кориандр молотый - 1 ч.л.", "Сахар - 1 ч.л."),
             instructions = listOf(
@@ -4107,7 +4206,7 @@ object RecipeRepository {
             calories = 210,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/1550440197.jpg",
-                "https://www.themealdb.com/images/ingredients/Egg.png"
+                "https://images.unsplash.com/photo-1525351484163-7529414344d8?w=600"
             ),
             ingredients = listOf("Яйца - 4 шт.", "Молоко - 2 ст.л.", "Сыр твердый - 60 г", "Морковь - 0.5 шт.", "Лук зеленый - 2 пера"),
             instructions = listOf(
@@ -4127,7 +4226,7 @@ object RecipeRepository {
             calories = 265,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/qwrtut1468418027.jpg",
-                "https://www.themealdb.com/images/ingredients/Potatoes.png"
+                "https://images.unsplash.com/photo-1568605117036-5fe5e7bab0b7?w=600"
             ),
             ingredients = listOf("Картофель - 800 г", "Сыр твердый - 150 г", "Молоко или сливки - 300 мл", "Чеснок - 2 зубчика", "Сливочное масло - 30 г"),
             instructions = listOf(
@@ -4147,7 +4246,7 @@ object RecipeRepository {
             calories = 210,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/xvrrux1511783685.jpg",
-                "https://www.themealdb.com/images/ingredients/Onions.png"
+                "https://images.unsplash.com/photo-1547592166-23ac45744acd?w=600"
             ),
             ingredients = listOf("Лук репчатый - 500 г", "Сыр твердый - 120 г", "Сливочное масло - 50 г", "Багет или белый хлеб - 4 ломтика", "Мясной бульон - 700 мл"),
             instructions = listOf(
@@ -4167,7 +4266,8 @@ object RecipeRepository {
             calories = 390,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/tlstrw1511724769.jpg",
-                "https://www.themealdb.com/images/media/meals/wtqrqw1511639627.jpg"
+                "https://www.themealdb.com/images/media/meals/wtqrqw1511639627.jpg",
+                "https://images.unsplash.com/photo-1555507036-ab1f4038808a?w=600"
             ),
             ingredients = listOf("Готовые круассаны - 4 шт.", "Миндальная мука или орехи - 100 г", "Сливочное масло - 80 г", "Яйца - 2 шт.", "Сахарная пудра - 80 г"),
             instructions = listOf(
@@ -4187,7 +4287,7 @@ object RecipeRepository {
             calories = 280,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/uuuspp1511297945.jpg",
-                "https://www.themealdb.com/images/ingredients/Mushrooms.png"
+                "https://www.themealdb.com/images/media/meals/1548772327.jpg"
             ),
             ingredients = listOf("Курица (филе) - 300 г", "Грибы шампиньоны - 300 г", "Сыр твердый - 150 г", "Сливки или сметана - 200 г", "Лук репчатый - 1 шт."),
             instructions = listOf(
@@ -4207,7 +4307,8 @@ object RecipeRepository {
             calories = 340,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/llcbn01574260722.jpg",
-                "https://www.themealdb.com/images/ingredients/Parmesan.png"
+                "https://images.unsplash.com/photo-1612874742237-6526221588e3?w=600",
+                "https://images.unsplash.com/photo-1551183053-bf91a1d81141?w=600"
             ),
             ingredients = listOf("Спагетти - 300 г", "Бекон или грудинка - 150 г", "Яйца (желтки) - 3 шт.", "Сыр Пармезан - 80 г", "Чеснок - 2 зубчика"),
             instructions = listOf(
@@ -4228,7 +4329,8 @@ object RecipeRepository {
             calories = 285,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/x0lk931587671540.jpg",
-                "https://www.themealdb.com/images/ingredients/Mozzarella.png"
+                "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=600",
+                "https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600"
             ),
             ingredients = listOf("Тесто для пиццы - 400 г", "Сыр Моцарелла - 250 г", "Томаты спелые - 3 шт.", "Томатный соус - 4 ст.л.", "Масло оливковое и базилик"),
             instructions = listOf(
@@ -4248,7 +4350,7 @@ object RecipeRepository {
             calories = 215,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/urtwux1486983078.jpg",
-                "https://www.themealdb.com/images/ingredients/Chicken%20Breast.png"
+                "https://images.unsplash.com/photo-1550304943-4f24f54ddde9?w=600"
             ),
             ingredients = listOf("Курица (филе) - 300 г", "Салат листовой или пекинская капуста - 1 пучок", "Томаты черри - 150 г", "Сыр твердый - 60 г", "Хлеб белый - 3 ломтика"),
             instructions = listOf(
@@ -4268,7 +4370,7 @@ object RecipeRepository {
             calories = 330,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/sywswr1511383814.jpg",
-                "https://www.themealdb.com/images/ingredients/Cheese.png"
+                "https://images.unsplash.com/photo-1513104890138-7c749659a591?w=600"
             ),
             ingredients = listOf("Тесто дрожжевое - 400 г", "Сыр Сулугуни или Моцарелла - 350 г", "Яйца - 2 шт.", "Сливочное масло - 30 г"),
             instructions = listOf(
@@ -4289,7 +4391,7 @@ object RecipeRepository {
             calories = 290,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/qtuwxu1468233098.jpg",
-                "https://www.themealdb.com/images/ingredients/Garlic.png"
+                "https://images.unsplash.com/photo-1598515214211-89d3c73ae83b?w=600"
             ),
             ingredients = listOf("Курица - 700 г", "Сливки или молоко - 250 мл", "Чеснок - 5 зубчиков", "Кинза и петрушка - 1 пучок", "Хмели-сунели - 1 ч.л."),
             instructions = listOf(
@@ -4309,7 +4411,8 @@ object RecipeRepository {
             calories = 230,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/swttys1511385853.jpg",
-                "https://www.themealdb.com/images/ingredients/Egg.png"
+                "https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600",
+                "https://images.unsplash.com/photo-1557872943-16a5ac26437e?w=600"
             ),
             ingredients = listOf("Курица (филе) - 350 г", "Лапша пшеничная или рамен - 200 г", "Яйца - 2 шт.", "Грибы шампиньоны - 150 г", "Соевый соус - 3 ст.л."),
             instructions = listOf(
@@ -4329,7 +4432,7 @@ object RecipeRepository {
             calories = 245,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/wvpsxx1468256321.jpg",
-                "https://www.themealdb.com/images/ingredients/Chicken.png"
+                "https://www.themealdb.com/images/media/meals/tytyxu1515363282.jpg"
             ),
             ingredients = listOf("Курица (филе или бедра) - 500 г", "Рис - 200 г", "Соевый соус - 4 ст.л.", "Мед или сахар - 2 ст.л.", "Чеснок - 2 зубчика"),
             instructions = listOf(
@@ -4349,7 +4452,8 @@ object RecipeRepository {
             calories = 290,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/uvuyxu1503067369.jpg",
-                "https://www.themealdb.com/images/media/meals/ypxvwv1505333929.jpg"
+                "https://www.themealdb.com/images/media/meals/ypxvwv1505333929.jpg",
+                "https://images.unsplash.com/photo-1618040996337-56904b7850b9?w=600"
             ),
             ingredients = listOf("Курица (филе) - 300 г", "Сыр твердый - 150 г", "Томаты - 2 шт.", "Лепешки тортильи или лаваш - 4 шт.", "Кукуруза консервированная - 100 г"),
             instructions = listOf(
@@ -4369,7 +4473,7 @@ object RecipeRepository {
             calories = 175,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/1529445434.jpg",
-                "https://www.themealdb.com/images/ingredients/King%20Prawns.png"
+                "https://images.unsplash.com/photo-1548943487-a2e4e43b4853?w=600"
             ),
             ingredients = listOf("Креветки или курица - 300 г", "Грибы шампиньоны - 150 г", "Кокосовое молоко или сливки - 200 мл", "Томаты черри - 100 г", "Лимон или лайм - 1 шт."),
             instructions = listOf(
@@ -4389,7 +4493,7 @@ object RecipeRepository {
             calories = 260,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/wyxwsp1486979827.jpg",
-                "https://www.themealdb.com/images/ingredients/Chicken.png"
+                "https://www.themealdb.com/images/media/meals/qptpvt1487339892.jpg"
             ),
             ingredients = listOf("Курица (филе) - 500 г", "Сливки или сметана - 200 мл", "Томатный соус - 4 ст.л.", "Чеснок - 3 зубчика", "Карри и паприка - 2 ч.л."),
             instructions = listOf(
@@ -4409,7 +4513,7 @@ object RecipeRepository {
             calories = 255,
             imageUrls = listOf(
                 "https://www.themealdb.com/images/media/meals/1525873040.jpg",
-                "https://www.themealdb.com/images/ingredients/Red%20Pepper.png"
+                "https://www.themealdb.com/images/media/meals/1529444830.jpg"
             ),
             ingredients = listOf("Курица (филе) - 500 г", "Перец болгарский - 2 шт.", "Соевый соус - 3 ст.л.", "Томатный соус - 2 ст.л.", "Крахмал - 2 ст.л.", "Мед или сахар - 1 ст.л."),
             instructions = listOf(
