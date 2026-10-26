@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
@@ -21,18 +23,23 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Prepare Persistent Signing Key
+      - name: Restore or Save Persistent Keystore
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p ~/.android
-          if [ ! -f app/fixed-debug.keystore ]; then
+          if [ -f app/fixed-debug.keystore ]; then
+            cp -f app/fixed-debug.keystore ~/.android/debug.keystore
+          else
             keytool -genkeypair -v -keystore app/fixed-debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+            cp -f app/fixed-debug.keystore ~/.android/debug.keystore
             git config user.name "github-actions"
             git config user.email "actions@github.com"
+            git pull --rebase origin main || true
             git add app/fixed-debug.keystore
-            git commit -m "Add persistent keystore [skip ci]" || true
-            git push origin HEAD:main || true
+            git commit -m "Lock persistent signing keystore [skip ci]" || true
+            git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git HEAD:main || true
           fi
-          cp -f app/fixed-debug.keystore ~/.android/debug.keystore
 
       - name: Install Gradle and Build APK
         run: |
