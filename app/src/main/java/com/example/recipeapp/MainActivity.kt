@@ -23,6 +23,7 @@ import android.speech.RecognizerIntent
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.speech.tts.Voice
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -97,6 +98,8 @@ import kotlin.random.Random
 
 private const val ACTION_INSTALL_COMMIT = "com.example.recipeapp.ACTION_INSTALL_COMMIT"
 private const val DEFAULT_GITHUB_REPO = "GattlerGun/ChefRecipeApp-APK"
+private const val CURRENT_APP_VERSION = "v1.2 ⚡"
+private const val WHATS_NEW_TEXT = "• Обновление v1.2 установлено прямо из приложения!\n• Добавлен блок «💡 Секрет Шефа» в карточки рецептов\n• Кнопка «🎲 Случайное блюдо» и защита экрана от затухания"
 
 private val LightCulinaryColorScheme = lightColorScheme(
     primary = Color(0xFFD84315), onPrimary = Color.White,
@@ -136,6 +139,7 @@ data class Recipe(
     val isCustom: Boolean = false
 ) {
     val cookingMinutes: Int = CulinaryUtils.parseCookingMinutesOnce(cookingTime)
+    val chefTip: String = CulinaryUtils.buildChefTip(category, cuisine)
     val searchIndexText: String = buildString {
         append(title.lowercase()).append(' ')
         append(description.lowercase()).append(' ')
@@ -442,6 +446,14 @@ object CulinaryUtils {
         return hours * 60 + mins
     }
 
+    fun buildChefTip(category: String, cuisine: String): String = when (category) {
+        "Супы" -> "Совет Шефа: дайте супу настояться под крышкой 10 минут после выключения плиты — вкус станет глубже."
+        "Выпечка", "Что-то к чаю" -> "Совет Шефа: все ингредиенты для теста должны быть комнатной температуры для идеальной пышности."
+        "Салаты" -> "Совет Шефа: заправляйте салат непосредственно перед подачей, чтобы сохранить хрустящую текстуру."
+        "Паста и пицца" -> "Совет Шефа: всегда оставляйте 2–3 ложки воды от варки пасты — она сделает соус шелковистым."
+        else -> "Совет Шефа ($cuisine кухня): не перегружайте сковороду при обжарке, чтобы получить румяную корочку."
+    }
+
     fun buildDishPhotoUrls(dishNameForPrompt: String, seedBase: Int, primaryThumbUrl: String? = null): List<String> {
         val cleanName = dishNameForPrompt.replace(Regex("[^a-zA-Zа-яА-ЯёЁ0-9\\s]"), " ").trim()
         val encoded = URLEncoder.encode(cleanName.ifEmpty { "cooked dish" }, "UTF-8").replace("+", "%20")
@@ -704,7 +716,7 @@ object CulinaryUtils {
         )
     }
 
-    fun parseVoiceCommand(spokenText: String, currentCuisine: String, currentCategory: String): Triple<String, List<String String,>> {
+    fun parseVoiceCommand(spokenText: String, currentCuisine: String, currentCategory: String): Triple<String, String, List<String>> {
         val lower = spokenText.lowercase()
         var newCuisine = currentCuisine
         var newCategory = currentCategory
@@ -898,7 +910,7 @@ class SpeechManager(private val context: Context, private val onSpeakingStateCha
 }
 
 // =========================================================================
-// ACTIVITY И UI ЭКРАНЫ
+// ACTIVITY И UI ЭКРАНЫ (ВЕРСИЯ v1.2 ⚡)
 // =========================================================================
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -937,7 +949,7 @@ class MainActivity : ComponentActivity() {
                     val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
                     if (confirmIntent != null) startActivity(confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
-                PackageInstaller.STATUS_SUCCESS -> Toast.makeText(this, "✅ Приложение успешно обновлено!", Toast.LENGTH_LONG).show()
+                PackageInstaller.STATUS_SUCCESS -> Toast.makeText(this, "✅ Обновление $CURRENT_APP_VERSION успешно установлено!", Toast.LENGTH_LONG).show()
                 PackageInstaller.STATUS_FAILURE_CONFLICT -> AppUpdateManager.signatureConflictState = true
                 else -> {
                     if (msg.contains("INCOMPATIBLE", true) || msg.contains("signature", true)) AppUpdateManager.signatureConflictState = true
@@ -955,6 +967,16 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
     val coroutineScope = rememberCoroutineScope()
 
     var currentlySpeakingId by remember { mutableStateOf<String?>(null) }
+    var runningTimersCount by remember { mutableIntStateOf(0) }
+
+    val keepScreenOn = currentlySpeakingId != null || runningTimersCount > 0
+    DisposableEffect(keepScreenOn) {
+        val window = (context as? Activity)?.window
+        if (keepScreenOn) window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
+
     val speechManager = remember(context) { SpeechManager(context) { newId -> currentlySpeakingId = newId } }
     DisposableEffect(speechManager) { onDispose { speechManager.release() } }
 
@@ -1006,7 +1028,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
             res.onSuccess { info ->
                 releaseInfo = info
                 if (info.isNewerThanInstalled) Toast.makeText(context, "🚀 На GitHub доступна новая сборка (${info.publishedFormatted})!", Toast.LENGTH_LONG).show()
-                else if (showToast) Toast.makeText(context, "✅ У вас установлена самая свежая сборка", Toast.LENGTH_SHORT).show()
+                else if (showToast) Toast.makeText(context, "✅ У вас актуальная сборка ($CURRENT_APP_VERSION)", Toast.LENGTH_SHORT).show()
             }.onFailure { err ->
                 if (showToast) Toast.makeText(context, "Ошибка проверки GitHub: ${err.localizedMessage}", Toast.LENGTH_SHORT).show()
             }
@@ -1018,6 +1040,16 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
     var recipes by remember { mutableStateOf(RecipeRepository.buildLocalDatabaseRecipes("Все", "Все", emptyList(), customUserRecipes, 10, 0)) }
     var isLoading by remember { mutableStateOf(false) }
     var activeLoadJob by remember { mutableStateOf<Job?>(null) }
+
+    fun pickRandomLuckyDish() {
+        speechManager.stop(); showOnlyFavorites = false; searchQuery = ""; isFiltersExpanded = false
+        val allPool = customUserRecipes + RecipeRepository.getAllCuratedRecipes() + RecipeRepository.getCachedOnlineRecipes()
+        if (allPool.isNotEmpty()) {
+            val lucky = allPool.random()
+            recipes = listOf(lucky)
+            Toast.makeText(context, "🎲 Случайный выбор Шефа: ${lucky.title}!", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     fun loadRecipes(
         modeToUse: DataSourceMode = selectedMode,
@@ -1154,13 +1186,20 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Обновление с GitHub", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text("Обновление ($CURRENT_APP_VERSION)", fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(value = githubRepoInput, onValueChange = { githubRepoInput = it }, label = { Text("Ваш репозиторий GitHub") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Text("📱 Установленная версия: $installedTimeStr", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("📱 Установлена: $CURRENT_APP_VERSION (от $installedTimeStr)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                    Surface(color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.padding(8.dp)) {
+                            Text("✨ Что нового в $CURRENT_APP_VERSION:", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text(WHATS_NEW_TEXT, fontSize = 11.sp)
+                        }
+                    }
 
                     if (isCheckingUpdate) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1178,7 +1217,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
                                 Text(
-                                    text = if (isNewAvailable) "🚀 Доступна новая версия на GitHub!" else "✅ Установлена последняя версия",
+                                    text = if (isNewAvailable) "🚀 Доступна новая версия на GitHub!" else "✅ Установлена последняя версия ($CURRENT_APP_VERSION)",
                                     fontWeight = FontWeight.Bold, fontSize = 13.sp,
                                     color = if (isNewAvailable) Color(0xFFA5D6A7) else MaterialTheme.colorScheme.onSurface
                                 )
@@ -1232,7 +1271,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 4.dp)) {
-        // Компактная шапка (42dp)
+        // Компактная шапка (42dp) с изумрудным бейджем v1.2 ⚡
         Row(
             modifier = Modifier.fillMaxWidth().height(42.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1241,21 +1280,35 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "🍲 Шеф-Повар",
-                    fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                    fontSize = 16.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable { currentScreen = AppScreen.RECIPES; showOnlyFavorites = false; searchQuery = "" }
                 )
-                IconButton(onClick = onToggleDarkTheme, modifier = Modifier.size(30.dp)) {
+                Spacer(modifier = Modifier.width(4.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.tertiary,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.clickable { showUpdateDialog = true; checkUpdatesNow(showToast = false) }
+                ) {
+                    Text(
+                        text = CURRENT_APP_VERSION,
+                        fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onTertiary,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+
+                IconButton(onClick = onToggleDarkTheme, modifier = Modifier.size(28.dp)) {
                     Icon(
                         imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                        contentDescription = "Тема", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp)
+                        contentDescription = "Тема", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp)
                     )
                 }
                 Box {
-                    IconButton(onClick = { showUpdateDialog = true; checkUpdatesNow(showToast = false) }, modifier = Modifier.size(30.dp)) {
+                    IconButton(onClick = { showUpdateDialog = true; checkUpdatesNow(showToast = false) }, modifier = Modifier.size(28.dp)) {
                         Icon(
                             imageVector = Icons.Default.SystemUpdate, contentDescription = "Обновление с GitHub",
                             tint = if (releaseInfo?.isNewerThanInstalled == true) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(17.dp)
                         )
                     }
                     if (releaseInfo?.isNewerThanInstalled == true) {
@@ -1266,28 +1319,28 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
 
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                 if (currentlySpeakingId != null) {
-                    IconButton(onClick = { speechManager.stop() }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.VolumeOff, contentDescription = "Стоп", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                    IconButton(onClick = { speechManager.stop() }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Default.VolumeOff, contentDescription = "Стоп", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(19.dp))
                     }
                 } else {
-                    IconButton(onClick = { speechManager.switchVoiceProfile() }, modifier = Modifier.size(30.dp)) {
-                        Icon(Icons.Default.RecordVoiceOver, contentDescription = "Голос", modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { speechManager.switchVoiceProfile() }, modifier = Modifier.size(28.dp)) {
+                        Icon(Icons.Default.RecordVoiceOver, contentDescription = "Голос", modifier = Modifier.size(17.dp))
                     }
                 }
-                IconButton(onClick = { currentScreen = AppScreen.RECIPES; isSearchVisible = !isSearchVisible; if (!isSearchVisible) searchQuery = "" }, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.Search, contentDescription = "Поиск", tint = if (isSearchVisible || searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(19.dp))
+                IconButton(onClick = { currentScreen = AppScreen.RECIPES; isSearchVisible = !isSearchVisible; if (!isSearchVisible) searchQuery = "" }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Search, contentDescription = "Поиск", tint = if (isSearchVisible || searchQuery.isNotEmpty()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                 }
-                IconButton(onClick = { currentScreen = AppScreen.RECIPES; showOnlyFavorites = false; isFiltersExpanded = !isFiltersExpanded }, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.Tune, contentDescription = "Фильтры", tint = if (isFiltersExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(19.dp))
+                IconButton(onClick = { currentScreen = AppScreen.RECIPES; showOnlyFavorites = false; isFiltersExpanded = !isFiltersExpanded }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.Tune, contentDescription = "Фильтры", tint = if (isFiltersExpanded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                 }
-                IconButton(onClick = { currentScreen = if (currentScreen == AppScreen.ADD_RECIPE) AppScreen.RECIPES else AppScreen.ADD_RECIPE }, modifier = Modifier.size(30.dp)) {
-                    Icon(Icons.Default.AddCircleOutline, contentDescription = "Свой рецепт", tint = if (currentScreen == AppScreen.ADD_RECIPE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(19.dp))
+                IconButton(onClick = { currentScreen = if (currentScreen == AppScreen.ADD_RECIPE) AppScreen.RECIPES else AppScreen.ADD_RECIPE }, modifier = Modifier.size(28.dp)) {
+                    Icon(Icons.Default.AddCircleOutline, contentDescription = "Свой рецепт", tint = if (currentScreen == AppScreen.ADD_RECIPE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
                 }
-                TextButton(onClick = { currentScreen = if (currentScreen == AppScreen.SHOPPING_LIST) AppScreen.RECIPES else AppScreen.SHOPPING_LIST }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp), modifier = Modifier.height(30.dp)) {
-                    Text("🛒${shoppingListItems.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                TextButton(onClick = { currentScreen = if (currentScreen == AppScreen.SHOPPING_LIST) AppScreen.RECIPES else AppScreen.SHOPPING_LIST }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.height(28.dp)) {
+                    Text("🛒${shoppingListItems.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 }
-                TextButton(onClick = { currentScreen = AppScreen.RECIPES; showOnlyFavorites = !showOnlyFavorites }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp), modifier = Modifier.height(30.dp)) {
-                    Text("❤️${favoriteRecipes.size}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (showOnlyFavorites) Color(0xFFE53935) else MaterialTheme.colorScheme.primary)
+                TextButton(onClick = { currentScreen = AppScreen.RECIPES; showOnlyFavorites = !showOnlyFavorites }, contentPadding = PaddingValues(horizontal = 5.dp, vertical = 0.dp), modifier = Modifier.height(28.dp)) {
+                    Text("❤️${favoriteRecipes.size}", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (showOnlyFavorites) Color(0xFFE53935) else MaterialTheme.colorScheme.primary)
                 }
             }
         }
@@ -1476,15 +1529,16 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                                             maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f)
                                         )
                                         if (!showOnlyFavorites && searchQuery.isBlank()) {
-                                            Surface(
-                                                color = MaterialTheme.colorScheme.primary,
-                                                shape = RoundedCornerShape(8.dp),
-                                                modifier = Modifier.clickable { loadRecipes(targetCount = committedLimitCount, collapseHeader = true, forceNewBatch = true) }
-                                            ) {
-                                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                                    Icon(Icons.Default.Refresh, contentDescription = "Новые", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
-                                                    Spacer(modifier = Modifier.width(3.dp))
-                                                    Text("Новые", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                                Surface(color = MaterialTheme.colorScheme.tertiary, shape = RoundedCornerShape(8.dp), modifier = Modifier.clickable { pickRandomLuckyDish() }) {
+                                                    Text("🎲 Случайное", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onTertiary, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp))
+                                                }
+                                                Surface(color = MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(8.dp), modifier = Modifier.clickable { loadRecipes(targetCount = committedLimitCount, collapseHeader = true, forceNewBatch = true) }) {
+                                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                                                        Icon(Icons.Default.Refresh, contentDescription = "Новые", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(14.dp))
+                                                        Spacer(modifier = Modifier.width(3.dp))
+                                                        Text("Новые", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimary)
+                                                    }
                                                 }
                                             }
                                         }
@@ -1515,6 +1569,7 @@ fun RecipeAppScreen(storage: RecipeStorage, isDarkTheme: Boolean, onToggleDarkTh
                                 fridgeStems = fridgeStemsSet, shoppingSet = shoppingItemsSet, isFavorite = isFav,
                                 currentlySpeakingId = currentlySpeakingId,
                                 onSpeakText = { utteranceId, text -> speechManager.speak(utteranceId, text) },
+                                onTimerRunningChanged = { isRunningNow -> runningTimersCount = (runningTimersCount + if (isRunningNow) 1 else -1).coerceAtLeast(0) },
                                 onAddMissingToCart = { missingItems ->
                                     var addedCount = 0
                                     missingItems.forEach { item -> if (!shoppingListItems.contains(item)) { shoppingListItems.add(item); addedCount++ } }
@@ -1723,6 +1778,7 @@ fun RecipeCard(
     isFavorite: Boolean,
     currentlySpeakingId: String?,
     onSpeakText: (String, String) -> Unit,
+    onTimerRunningChanged: (Boolean) -> Unit,
     onAddMissingToCart: (List<String>) -> Unit,
     onToggleFavorite: () -> Unit,
     onDeleteCustom: (() -> Unit)? = null
@@ -1831,7 +1887,7 @@ fun RecipeCard(
                         append("Рецепт: ${recipe.title}. ${recipe.description} Кухня: ${recipe.cuisine}. Время готовки: ${recipe.cookingTime}. ")
                         append("Ингредиенты на $portions порции: ${scaledIngredients.joinToString(". ")}. Способ приготовления: ")
                         safeInstructions.forEachIndexed { i, step -> append("Шаг ${i + 1}. $step. ") }
-                        append("Приятного аппетита!")
+                        append("${recipe.chefTip} Приятного аппетита!")
                     }
                     onSpeakText(fullRecipeUtteranceId, fullSpeech)
                 },
@@ -1928,6 +1984,21 @@ fun RecipeCard(
                 }
             }
 
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Surface(
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "💡 ${recipe.chefTip}",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            }
+
             Spacer(modifier = Modifier.height(10.dp))
 
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -1975,7 +2046,7 @@ fun RecipeCard(
                     }
 
                     if (timerInfo != null) {
-                        StepTimerWidget(timerKey = stepUtteranceId, timerInfo = timerInfo, isDarkTheme = isDarkTheme)
+                        StepTimerWidget(timerKey = stepUtteranceId, timerInfo = timerInfo, isDarkTheme = isDarkTheme, onRunningStateChanged = onTimerRunningChanged)
                     }
                 }
             }
@@ -1984,10 +2055,15 @@ fun RecipeCard(
 }
 
 @Composable
-fun StepTimerWidget(timerKey: String, timerInfo: ParsedTimer, isDarkTheme: Boolean) {
+fun StepTimerWidget(timerKey: String, timerInfo: ParsedTimer, isDarkTheme: Boolean, onRunningStateChanged: (Boolean) -> Unit) {
     var timeLeft by remember(timerKey) { mutableIntStateOf(timerInfo.durationSeconds) }
     var isRunning by remember(timerKey) { mutableStateOf(false) }
     var isFinished by remember(timerKey) { mutableStateOf(false) }
+
+    DisposableEffect(isRunning) {
+        if (isRunning) onRunningStateChanged(true)
+        onDispose { if (isRunning) onRunningStateChanged(false) }
+    }
 
     LaunchedEffect(isRunning) {
         while (isRunning && timeLeft > 0) {
