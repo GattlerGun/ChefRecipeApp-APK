@@ -400,6 +400,7 @@ object AppUpdateManager {
             } catch (e: Exception) { Result.failure(e) }
         }
 
+    // Открывает ВИДИМОЕ системное диалоговое окно Android "Обновить это приложение?" с кнопкой Установить
     fun triggerVisibleSystemInstaller(context: Context, apkFile: File, mediaStoreUri: Uri?) {
         if (!apkFile.exists() || apkFile.length() == 0L) {
             Toast.makeText(context, "Файл обновления не найден", Toast.LENGTH_SHORT).show()
@@ -411,7 +412,7 @@ object AppUpdateManager {
             return
         }
 
-        // Способ 1: Прямое открытие видимого системного окна установщика Android через MediaStore URI
+        // Запуск через MediaStore URI (показывает стандартное системное окно установки Android)
         if (mediaStoreUri != null) {
             try {
                 val viewIntent = Intent(Intent.ACTION_VIEW).apply {
@@ -423,28 +424,16 @@ object AppUpdateManager {
             } catch (_: Exception) {}
         }
 
-        // Способ 2 (Резервный): PackageInstaller Session
-        var session: PackageInstaller.Session? = null
+        // Резервный запуск через Intent от файла
         try {
-            val installer = context.packageManager.packageInstaller
-            try { installer.mySessions.forEach { installer.abandonSession(it.sessionId) } } catch (_: Exception) {}
-            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-            val sessionId = installer.createSession(params)
-            session = installer.openSession(sessionId)
-            apkFile.inputStream().use { input ->
-                session.openWrite("ChefRecipeApp_update.apk", 0, apkFile.length()).use { output ->
-                    input.copyTo(output, 32 * 1024)
-                    session.fsync(output)
-                }
+            val fileUri = Uri.fromFile(apkFile)
+            val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(fileUri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            val callbackIntent = Intent(context, MainActivity::class.java).apply { action = ACTION_INSTALL_COMMIT }
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_UPDATE_CURRENT
-            val pendingIntent = PendingIntent.getActivity(context, sessionId, callbackIntent, flags)
-            session.commit(pendingIntent.intentSender)
+            context.startActivity(viewIntent)
         } catch (e: Exception) {
-            Toast.makeText(context, "Ошибка установщика: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
-        } finally {
-            try { session?.close() } catch (_: Exception) {}
+            Toast.makeText(context, "Не удалось запустить установщик: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         }
     }
 }
