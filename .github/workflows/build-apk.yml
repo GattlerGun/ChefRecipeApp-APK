@@ -27,9 +27,11 @@ jobs:
 
       - name: Ensure Persistent Signing Keystore
         run: |
+          git pull --rebase origin main || true
           if [ ! -f app/fixed-debug.keystore ]; then
             keytool -genkeypair -v \
               -keystore app/fixed-debug.keystore \
+              -storetype PKCS12 \
               -storepass android \
               -alias androiddebugkey \
               -keypass android \
@@ -39,18 +41,25 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add app/fixed-debug.keystore
-            git commit -m "chore: save persistent debug.keystore for seamless APK updates [skip ci]"
-            git push origin main || true
+            for i in 1 2 3; do
+              git pull --rebase origin main || true
+              git add app/fixed-debug.keystore
+              git commit -m "chore: save persistent debug.keystore [skip ci]" || true
+              git push origin HEAD:main && break
+              sleep 2
+            done
           fi
           mkdir -p ~/.android
           cp -f app/fixed-debug.keystore ~/.android/debug.keystore
 
-      - name: Install Gradle 8.7 and Build APK
+      - name: Install Gradle 8.7, Build and Force-Sign APK
         run: |
           curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o gradle.zip
           unzip -q gradle.zip -d /tmp
           /tmp/gradle-8.7/bin/gradle assembleDebug --no-daemon
+          APKSIGNER=$(find$ANDROID_HOME/build-tools -name apksigner | sort -V | tail -n 1)
+          "$APKSIGNER" sign --ks app/fixed-debug.keystore --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey app/build/outputs/apk/debug/app-debug.apk
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/app-debug.apk
 
       - name: Upload APK to Artifacts
         uses: actions/upload-artifact@v4
