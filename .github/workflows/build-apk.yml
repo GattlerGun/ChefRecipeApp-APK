@@ -16,14 +16,35 @@ jobs:
         run: |
           git init
           git remote add origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
-          git fetch --depth 1 origin ${{ github.sha }}
-          git checkout FETCH_HEAD
+          git fetch --depth 1 origin main
+          git checkout -B main origin/main
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           java-version: '17'
           distribution: 'temurin'
+
+      - name: Ensure Persistent Signing Keystore
+        run: |
+          if [ ! -f app/fixed-debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore app/fixed-debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add app/fixed-debug.keystore
+            git commit -m "chore: save persistent debug.keystore for seamless APK updates [skip ci]"
+            git push origin main || true
+          fi
+          mkdir -p ~/.android
+          cp -f app/fixed-debug.keystore ~/.android/debug.keystore
 
       - name: Install Gradle 8.7 and Build APK
         run: |
@@ -43,4 +64,4 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk ChefRecipeApp.apk
           gh release delete latest-apk --cleanup-tag --yes || true
-          gh release create latest-apk ChefRecipeApp.apk --target ${{ github.sha }} --title "Шеф-Повар APK (Свежая сборка)" --notes "Прямое скачивание файла ChefRecipeApp.apk" || true
+          gh release create latest-apk ChefRecipeApp.apk --target main --title "Шеф-Повар APK (Свежая сборка)" --notes "Прямое скачивание файла ChefRecipeApp.apk с постоянной цифровой подписью" || true
