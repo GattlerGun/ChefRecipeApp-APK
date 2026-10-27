@@ -11,13 +11,29 @@ android {
         applicationId = "com.example.recipeapp"
         minSdk = 24
         targetSdk = 34
-        versionCode = 7
+        versionCode = 8
         versionName = "1.6"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            val fixedKey = file("fixed-debug.keystore")
+            if (fixedKey.exists()) {
+                storeFile = fixedKey
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
