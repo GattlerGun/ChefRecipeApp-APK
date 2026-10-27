@@ -401,6 +401,7 @@ object AppUpdateManager {
         }
 
     // Открывает ВИДИМОЕ системное диалоговое окно Android "Обновить это приложение?" с кнопкой Установить
+    // Открывает системное диалоговое окно Android "Обновить это приложение?" без ошибки FileUriExposedException
     fun triggerVisibleSystemInstaller(context: Context, apkFile: File, mediaStoreUri: Uri?) {
         if (!apkFile.exists() || apkFile.length() == 0L) {
             Toast.makeText(context, "Файл обновления не найден", Toast.LENGTH_SHORT).show()
@@ -412,20 +413,43 @@ object AppUpdateManager {
             return
         }
 
-        // Запуск через MediaStore URI (показывает стандартное системное окно установки Android)
-        if (mediaStoreUri != null) {
-            try {
-                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(mediaStoreUri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Способ 1: Стандартная сессия PackageInstaller (вызывает системное окно подтверждения установки Android)
+        var session: PackageInstaller.Session? = null
+        try {
+            val installer = context.packageManager.packageInstaller
+            try { installer.mySessions.forEach { installer.abandonSession(it.sessionId) } } catch (_: Exception) {}
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+            }
+            val sessionId = installer.createSession(params)
+            session = installer.openSession(sessionId)
+            apkFile.inputStream().use { input ->
+                session.openWrite("ChefRecipeApp_update.apk", 0, apkFile.length()).use { output ->
+                    input.copyTo(output, 32 * 1024)
+                    session.fsync(output)
                 }
-                context.startActivity(viewIntent)
-                return
-            } catch (_: Exception) {}
+            }
+            val callbackIntent = Intent(context, MainActivity::class.java).apply {
+                action = ACTION_INSTALL_COMMIT
+                addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getActivity(context, sessionId, callbackIntent, flags)
+            session.commit(pendingIntent.intentSender)
+            return
+        } catch (_: Exception) {
+        } finally {
+            try { session?.close() } catch (_: Exception) {}
         }
 
-        // Резервный запуск через Intent от файла
+        // Способ 2 (Резервный): Прямой запуск окна установщика со снятием блокировки file:// (StrictMode)
         try {
+            android.os.StrictMode.setVmPolicy(android.os.StrictMode.VmPolicy.Builder().build())
             val fileUri = Uri.fromFile(apkFile)
             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(fileUri, "application/vnd.android.package-archive")
@@ -436,7 +460,6 @@ object AppUpdateManager {
             Toast.makeText(context, "Не удалось запустить установщик: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         }
     }
-}
 
 // =========================================================================
 // КУЛИНАРНЫЕ УТИЛИТЫ И СЛОВАРЬ
