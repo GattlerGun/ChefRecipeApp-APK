@@ -460,6 +460,7 @@ object AppUpdateManager {
             Toast.makeText(context, "Не удалось запустить установщик: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
         }
     }
+}
 
 // =========================================================================
 // КУЛИНАРНЫЕ УТИЛИТЫ И СЛОВАРЬ
